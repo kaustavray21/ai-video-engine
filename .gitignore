@@ -1,0 +1,7 @@
+venv
+dashboard/node_modules
+dashboard/dist
+.env
+aidvideo_engine.zip
+media
+temporal.txt
