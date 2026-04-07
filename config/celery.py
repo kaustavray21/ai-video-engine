@@ -21,10 +21,20 @@ def redispatch_stuck_jobs(sender, **kwargs):
     """
     Re-queue any SCHEDULED jobs that were stuck when the worker was down.
 
-    Jobs are staggered with a 60-second countdown between each dispatch so
-    the worker pool can absorb them at its natural rate rather than
-    receiving a burst of N simultaneous tasks on startup.
+    NOTE: This function is intentionally disabled.
+    Video processing has been migrated to Temporal Cloud. The Celery task
+    code in apps/core/tasks/processing.py is kept for reference but is no
+    longer invoked. Temporal maintains durable workflow state — if a worker
+    restarts, open VideoProcessingWorkflow executions resume automatically
+    from their last completed activity without any manual re-queuing.
+
+    To re-enable Celery processing, remove the early return below and
+    revert the dispatch calls in apps/core/api/views/video_views.py.
     """
+    # Disabled: processing is now handled by Temporal Cloud.
+    return
+
+    # --- Original Celery re-dispatch logic (kept for reference) ---
     import django
     django.setup()
 
@@ -36,9 +46,9 @@ def redispatch_stuck_jobs(sender, **kwargs):
             app.send_task(
                 'apps.core.tasks.processing.process_video_task',
                 args=[job.id],
-                countdown=i * 60,   # 60-second gap between each re-dispatch
+                countdown=i * 60,
             )
-        spread_mins = count  # one per minute
+        spread_mins = count
         print(f'[celery] Staggered re-dispatch of {count} stuck SCHEDULED job(s) '
               f'over ~{spread_mins} minute(s)')
     else:

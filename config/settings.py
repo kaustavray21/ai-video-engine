@@ -181,6 +181,19 @@ CELERY_TASK_SOFT_TIME_LIMIT = 1800   # 30 min: raises SoftTimeLimitExceeded
 CELERY_TASK_TIME_LIMIT      = 2400   # 40 min: hard SIGKILL
 
 # ---------------------------------------------------------------------------
+# Temporal Cloud
+# ---------------------------------------------------------------------------
+
+TEMPORAL_ENDPOINT = os.environ.get('TEMPORAL_ENDPOINT', 'localhost:7233')
+TEMPORAL_NAMESPACE = os.environ.get('TEMPORAL_NAMESPACE', 'default')
+TEMPORAL_API_KEY = os.environ.get('TEMPORAL_API_KEY', '')
+TEMPORAL_TASK_QUEUE = os.environ.get('TEMPORAL_TASK_QUEUE', 'video-processing')
+
+# TLS is required for Temporal Cloud (api-key auth uses mTLS transport).
+# Set to False only when connecting to a local dev server without TLS.
+TEMPORAL_TLS = os.environ.get('TEMPORAL_TLS', 'True').lower() in ('true', '1', 'yes')
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 

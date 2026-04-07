@@ -133,3 +133,35 @@
 3.  **Performance & Resource Efficiency:**
     *   Estimated reduction in processing time for large videos (>4 hours) from ~25 minutes to **~5 minutes** (5x speedup).
     *   Maintains low local resource footprint by strictly utilizing I/O-bound concurrency and offloading computational transcription to OpenAI servers.
+
+## Temporal Cloud Orchestration Migration (April 7, 2026)
+
+1.  **Architecture Transformation & Decoupling:**
+    *   Transitioned the core overarching video processing pipeline from locally managed Celery workers to a resilient **Temporal Cloud** orchestrated workflow engine.
+    *   Replaced fragile asynchronous task chains with deterministic state workflows (`VideoProcessingWorkflow`), ensuring step-level durability and automatic recovery semantics upon worker disruptions.
+
+2.  **Workflow & Activity Segregation:**
+    *   Implemented strict separation of orchestration (Workflows) from execution logic (Activities) within the newly established `apps.core.temporal` package module.
+    *   Refactored original synchronous service utilities (Download, Audio Extraction, Whisper Transcription, FAISS Embedding) into distinct `@activity.defn` functions wrapped with robust heartbeat monitoring and execution timeouts.
+    *   Integrated explicit Temporal Retry Policies to systematically handle network-bound transient errors strictly targeting Vimeo API ingestion and OpenAI vectorization limits.
+
+3.  **Cross-Context View Dispatching Integration:**
+    *   Abstracted Temporal client connections within `apps.core.temporal.client` introducing an async-to-sync coroutine dispatch bridge (`_run_async`).
+    *   Replaced existing Celery `send_task` execution points across all unified REST hooks (`VideoCreateAPI`, `BulkVideoCreateAPI`, `VideoDeleteAPI`) allowing synchronous Django Views to trigger completely decoupled Temporal workflow initializations.
+    *   Migrated large scale aggregation logic (`rebuild_course_vectorstore`) uniformly into an independent standalone `CourseRebuildWorkflow` safely triggered via child-workflow paradigms, mitigating cumulative Out-of-Memory (OOM) ingestion accumulation.
+
+4.  **Operational Resilience & Fallbacks:**
+    *   Deactivated the historical Celery `@worker_ready` redispatch signal logic returning an explicit early exit mapping to prevent dual-processing pipeline overlap, while preserving legacy logic blocks via commentary fallback structures.
+    *   Introduced a dedicated custom Django management command `python manage.py run_temporal_worker` handling seamless CLI initialization loops polling against explicitly authenticated MTLS Temporal Cloud instances configured universally through `.env` namespace variables.
+
+5.  **Django ORM Async-Safety Enhancements:**
+    *   Resolved `SynchronousOnlyOperation` failures by deliberately converting asynchronous activity definitions back into standard standard definition scopes (`def` vs `async def`).
+    *   Leveraged Temporal's built-in multi-threading models alongside Python's concurrent `ThreadPoolExecutor` context managers (`max_workers=4`) injected dynamically directly into the `Worker` configurations, ensuring seamless parallel network IO without violating strict Django ORM thread locality invariants.
+
+6.  **Temporal Queue Recovery Utilities:**
+    *   Created `python manage.py retry_failed_videos`, a fully featured CLI administration command capable of filtering historically bogged `FAILED`, `SCHEDULED`, and `IN_PROGRESS` task states from local database models.
+    *   Designed with deep `--dry-run` and `--job-ids` inspection parameters to ensure robust pipeline resets, dynamically wiping legacy crash tracebacks while correctly proxying refreshed context payloads directly into the Temporal task broker.
+
+7.  **Payload Serialization & Type Compatibility Fixes:**
+    *   Resolved `RuntimeError: Failed decoding arguments` caused by strict Temporal JSON deserialization mismatches between external API outputs and workflow dataclass definitions.
+    *   Implemented exhaustive defensive type coercion (`str()`, `int()`, `dict()`) across all activity return structures, ensuring that `null` values from Vimeo/OpenAI responses are correctly normalized to non-optional primitive defaults (e.g., empty strings or zeros) before crossing the Temporal wire.

@@ -5,3 +5,5 @@ dashboard/dist
 aidvideo_engine.zip
 media
 temporal.txt
+apps/core/temporal/__pycache__
+config/__pycache__

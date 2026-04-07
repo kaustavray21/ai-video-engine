@@ -97,11 +97,10 @@ class VideoCreateAPI(APIView):
         course.update_statistics()
         course.bump_content_version()
 
-        # Dispatch async task safely using signature/send_task (avoids Celery 3.12 ChannelPromise bug)
-        from celery import current_app
-        current_app.send_task('apps.core.tasks.processing.process_video_task', args=[job.id])
+        from apps.core.temporal.client import start_video_workflow
+        workflow_id = start_video_workflow(job_id=job.id, video=video)
 
-        logger.info(f'Video {vimeo_id} added to course "{course.title}", job {job.id} dispatched')
+        logger.info(f'Video {vimeo_id} added to course "{course.title}", Temporal workflow {workflow_id} started')
 
         return Response(
             {
@@ -154,11 +153,8 @@ class BulkVideoCreateAPI(APIView):
             )
             job = ProcessingJob.objects.create(video=video, status='SCHEDULED')
 
-            from celery import current_app
-            current_app.send_task(
-                'apps.core.tasks.processing.process_video_task',
-                args=[job.id],
-            )
+            from apps.core.temporal.client import start_video_workflow
+            start_video_workflow(job_id=job.id, video=video)
 
             added.append({
                 'video_id': video.id,
@@ -224,11 +220,8 @@ class VideoDeleteAPI(APIView):
         course.bump_content_version()
 
         # Rebuild course vectorstore in the background
-        from celery import current_app
-        current_app.send_task(
-            'apps.core.tasks.processing.rebuild_course_vectorstore_task',
-            args=[course_id],
-        )
+        from apps.core.temporal.client import start_course_rebuild
+        start_course_rebuild(course_id=int(course_id))
 
         logger.info(f'Deleted video: {title} (ID: {video_id}) from course {course.title}')
 
