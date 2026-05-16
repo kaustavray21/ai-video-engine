@@ -1,10 +1,5 @@
-"""
-Course aggregator — merge per-video FAISS indexes into a course-level index.
-
-Extracted from: api/live_course_vectorstore_builder.py (CourseVectorstoreBuilder, 1-291)
-"""
-
 import os
+import re
 import shutil
 import tempfile
 import logging
@@ -44,23 +39,24 @@ class CourseAggregator:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _make_course_slug(course) -> str:
+        """Build a filesystem-safe slug: {id}_{sanitized_title}."""
+        slug = re.sub(r'[^a-zA-Z0-9]+', '_', course.title).strip('_')[:50]
+        return f"{course.id}_{slug}"
+
+    @staticmethod
     def get_course_vs_path(course) -> str:
         """Absolute path for the course-level vectorstore."""
+        slug = CourseAggregator._make_course_slug(course)
         return os.path.join(
-            str(settings.MEDIA_ROOT),
-            f'course_{course.id}',
-            'vectorstore',
-            'course_complete',
+            str(settings.MEDIA_ROOT), 'course_vectorstores', slug,
         )
 
     @staticmethod
     def get_course_vs_relative(course) -> str:
         """Relative path (to MEDIA_ROOT)."""
-        return os.path.join(
-            f'course_{course.id}',
-            'vectorstore',
-            'course_complete',
-        )
+        slug = CourseAggregator._make_course_slug(course)
+        return os.path.join('course_vectorstores', slug)
 
     @staticmethod
     def _resolve_video_vs_path(video) -> str:

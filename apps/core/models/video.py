@@ -68,6 +68,21 @@ class Video(models.Model):
         help_text='Has vectorstore been created?'
     )
 
+    # Transcript provenance
+    transcript_source = models.CharField(
+        max_length=20,
+        choices=[
+            ('vimeo_captions', 'Vimeo Captions (VTT)'),
+            ('whisper', 'Whisper Transcription'),
+        ],
+        blank=True, default='',
+        help_text='How the transcript was obtained'
+    )
+    vimeo_caption_language = models.CharField(
+        max_length=20, blank=True, default='',
+        help_text='Language code of Vimeo caption track (e.g. en-x-autogen)'
+    )
+
     # Processing
     status = models.CharField(
         max_length=20, choices=STATUS_CHOICES,

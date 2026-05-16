@@ -21,6 +21,7 @@ class ProcessingJob(models.Model):
         ('COMPLETED', 'Completed'),
         ('FAILED', 'Failed'),
         ('ABORTED', 'Aborted'),
+        ('REUSED', 'Reused — Vectorstore Already Existed'),
     ]
 
     video = models.ForeignKey(
@@ -58,6 +59,16 @@ class ProcessingJob(models.Model):
 
     # Step details
     processing_details = models.JSONField(default=dict, blank=True)
+    processing_path = models.CharField(
+        max_length=20,
+        choices=[
+            ('vimeo_transcript', 'Fast Path — Vimeo Captions'),
+            ('full_pipeline', 'Full Pipeline — Download + Whisper'),
+            ('reused', 'Reused — Vectorstore Already Existed'),
+        ],
+        blank=True, default='',
+        help_text='Which processing route was taken'
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -116,6 +127,26 @@ class ProcessingJob(models.Model):
         ])
         self.video.status = 'failed'
         self.video.save(update_fields=['status'])
+
+    def mark_reused(self, source_info: str):
+        """Mark job as reused — vectorstore already existed on disk."""
+        self.status = 'REUSED'
+        self.progress = 100
+        self.completed_at = timezone.now()
+        self.processing_path = 'reused'
+        self.processing_details = {
+            'reuse_reason': 'vectorstore_exists_on_disk',
+            'source': source_info,
+        }
+        self.save(update_fields=[
+            'status', 'progress', 'completed_at',
+            'processing_path', 'processing_details',
+        ])
+        # Mark parent video as ready
+        self.video.vectorstore_created = True
+        self.video.status = 'ready'
+        self.video.save(update_fields=['vectorstore_created', 'status'])
+        self.video.course.update_statistics()
 
     def update_progress(self, progress: int, step: str = ''):
         self.progress = min(100, max(0, progress))
