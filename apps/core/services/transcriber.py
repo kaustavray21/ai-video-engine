@@ -84,7 +84,7 @@ class Transcriber:
             logger.exception(f'Audio extraction failed: {e}')
             return None
 
-    def transcribe(self, audio_path: str) -> TranscriptResult:
+    def transcribe(self, audio_path: str, output_txt_path: Optional[str] = None) -> TranscriptResult:
         """
         Transcribe audio using the OpenAI Whisper API.
 
@@ -108,7 +108,7 @@ class Transcriber:
             # Whisper API accepts files up to 25 MB.
             # For larger files, we split into chunks.
             if file_size > 24 * 1024 * 1024:
-                return self._transcribe_large(audio_path)
+                return self._transcribe_large(audio_path, output_txt_path)
 
             with open(audio_path, 'rb') as audio_file:
                 response = self.client.audio.transcriptions.create(
@@ -121,7 +121,7 @@ class Transcriber:
             segments = getattr(response, 'segments', []) or []
 
             # Save transcript to disk
-            transcript_path = os.path.splitext(audio_path)[0] + '.txt'
+            transcript_path = output_txt_path if output_txt_path else os.path.splitext(audio_path)[0] + '.txt'
             with open(transcript_path, 'w', encoding='utf-8') as f:
                 f.write(transcript_text)
 
@@ -141,7 +141,7 @@ class Transcriber:
             logger.exception(f'Transcription failed: {e}')
             return TranscriptResult(success=False, error=str(e))
 
-    def _transcribe_large(self, audio_path: str) -> TranscriptResult:
+    def _transcribe_large(self, audio_path: str, output_txt_path: Optional[str] = None) -> TranscriptResult:
         """
         Split large audio into ≤24 MB chunks, transcribe each, and concatenate.
         Uses ffmpeg to split on 10-minute boundaries.
@@ -204,7 +204,7 @@ class Transcriber:
 
         full_transcript = ' '.join(all_text)
 
-        transcript_path = os.path.splitext(audio_path)[0] + '.txt'
+        transcript_path = output_txt_path if output_txt_path else os.path.splitext(audio_path)[0] + '.txt'
         with open(transcript_path, 'w', encoding='utf-8') as f:
             f.write(full_transcript)
 

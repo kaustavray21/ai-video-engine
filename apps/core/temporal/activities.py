@@ -105,13 +105,16 @@ def download_video(inp: DownloadInput) -> DownloadOutput:
     job = ProcessingJob.objects.select_related('video__course').get(id=inp.job_id)
     video = job.video
 
+    import re
+    safe_course_title = re.sub(r'[^\w\s-]', '', video.course.title).strip().replace(' ', '_')
+
     job.update_progress(5, 'downloading')
     video.status = 'downloading'
     video.save(update_fields=['status'])
 
     activity.heartbeat('starting_download')
 
-    output_dir = os.path.join(inp.media_root, 'live_videos')
+    output_dir = os.path.join(inp.media_root, 'live_videos', safe_course_title)
     downloader = VimeoDownloader(
         vimeo_token=settings.VIMEO_TOKEN,
         output_dir=output_dir,
@@ -160,8 +163,14 @@ def extract_and_transcribe(inp: TranscribeInput) -> TranscribeOutput:
     from apps.core.services.transcriber import Transcriber
     from django.conf import settings
 
-    job = ProcessingJob.objects.select_related('video').get(id=inp.job_id)
+    job = ProcessingJob.objects.select_related('video__course').get(id=inp.job_id)
     video = job.video
+
+    import re
+    safe_course_title = re.sub(r'[^\w\s-]', '', video.course.title).strip().replace(' ', '_')
+    vimeo_id = video.vimeo_video_id
+    transcript_filename = f'{vimeo_id}_transcript.txt'
+    output_txt_path = os.path.join(inp.media_root, 'live_videos', safe_course_title, transcript_filename)
 
     transcriber = Transcriber(openai_api_key=settings.OPENAI_API_KEY)
 
@@ -183,7 +192,7 @@ def extract_and_transcribe(inp: TranscribeInput) -> TranscribeOutput:
     activity.heartbeat('transcribing')
     job.update_progress(45, 'transcribing')
 
-    tx_result = transcriber.transcribe(audio_path)
+    tx_result = transcriber.transcribe(audio_path, output_txt_path=output_txt_path)
     if not tx_result.success:
         raise Exception(f'Transcription failed: {tx_result.error}')
 
