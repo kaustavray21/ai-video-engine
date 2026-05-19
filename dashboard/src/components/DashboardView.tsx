@@ -20,17 +20,7 @@ export default function DashboardView() {
     fetchLogs({ limit: 6 }).then((res) => setLogs(res.logs));
   }, []);
 
-  // Refresh every 30 seconds; skip when the browser tab is hidden to
-  // prevent Chrome from parsing megabytes of log JSON in the background.
-  useEffect(() => {
-    const poll = () => {
-      if (document.hidden) return;
-      fetchDashboardStats().then(setStats);
-      fetchLogs({ limit: 6 }).then((res) => setLogs(res.logs));
-    };
-    const t = setInterval(poll, 30000);
-    return () => clearInterval(t);
-  }, []);
+  // Polling for dashboard stats and logs has been removed to stop constant backend requests.
 
 
   return (

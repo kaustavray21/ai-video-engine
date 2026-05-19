@@ -4,9 +4,10 @@ import Header from './components/Header';
 import DashboardView from './components/DashboardView';
 import ApiTesterView from './components/ApiTesterView';
 import HistoryView from './components/HistoryView';
+import StudyMaterialsView from './components/StudyMaterialsView';
 import './index.css';
 
-type Tab = 'dashboard' | 'api' | 'history';
+type Tab = 'dashboard' | 'api' | 'history' | 'materials';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
@@ -32,6 +33,9 @@ export default function App() {
           </div>
           <div style={{ display: activeTab === 'history' ? 'block' : 'none' }}>
             <HistoryView />
+          </div>
+          <div style={{ display: activeTab === 'materials' ? 'block' : 'none' }}>
+            <StudyMaterialsView />
           </div>
         </div>
       </div>

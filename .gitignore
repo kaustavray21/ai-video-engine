@@ -1,4 +1,7 @@
+# Python cache
 __pycache__/
+*.py[cod]
+*$py.class
 venv
 dashboard/node_modules
 dashboard/dist
@@ -6,4 +9,8 @@ dashboard/dist
 aidvideo_engine.zip
 media
 temporal.txt
+logs/
 project_local_knowledge_base/
+current.log
+study_material.json
+unique_study_material_ids.json

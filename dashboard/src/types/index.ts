@@ -36,3 +36,20 @@ export interface HistoryEntry {
   status: string;
   statusCode: number | string;
 }
+
+export interface StudyMaterial {
+  id: number;
+  name: string;
+  description: string;
+  file_path: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  files_count: number;
+  vectorstore_location: string;
+  created_at: string;
+  attached_courses_count: number;
+}
+
+export interface Course {
+  id: number;
+  title: string;
+}

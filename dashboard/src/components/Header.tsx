@@ -8,6 +8,7 @@ const titles: Record<string, string> = {
   dashboard: 'Dashboard',
   api: 'API Tester',
   history: 'History',
+  materials: 'Study Materials',
 };
 
 export default function Header({ activeTab }: Props) {

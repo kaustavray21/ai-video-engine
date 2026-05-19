@@ -15,6 +15,10 @@ app.config_from_object('django.conf:settings', namespace='CELERY')
 # Our task lives in 'processing.py', so we include the full module path.
 app.autodiscover_tasks(['apps.core.tasks'], related_name='processing')
 
+# Ensure study_material_tasks module is imported for task registration.
+# The shared_task decorator registers tasks at import time on the default app.
+import apps.core.tasks.study_material_tasks  # noqa: E402, F401
+
 
 @worker_ready.connect
 def redispatch_stuck_jobs(sender, **kwargs):

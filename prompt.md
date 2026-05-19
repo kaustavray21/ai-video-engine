@@ -25,7 +25,7 @@ Steps:
   5. Convert each file -> text -> media/study_materials/{name}/text/{file_name}.txt
      Support: .pdf .doc .docx .txt .md .rtf .ppt .pptx .odp .xls .xlsx .csv .ods
               .py .js .ts .html .css .java .go .rs .cpp .h .json .yaml .yml .xml
-  6. Build FAISS vectorstore -> study_materials_vectorstore/{name}.vectorstore/index.faiss
+  6. Build FAISS vectorstore -> study_materials_vectorstore/complete_vectorstores/{id}_{name}_vectorstore/index.faiss
   7. Save index.pkl with metadata (chunks, embeddings, file_metadata: original_name, type, size, chunk_index)
   8. Set status = completed, files_count, vectorstore_location
   9. Delete original zip + extracted files (keep text/ folder)

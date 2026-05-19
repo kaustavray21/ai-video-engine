@@ -33,6 +33,18 @@ const initialState = () => ({
   saveMsg:        '',
 });
 
+type BodyType = 'none' | 'form-data' | 'x-www-form-urlencoded' | 'raw' | 'binary' | 'GraphQL';
+
+type FormDataItem = {
+  id: string;
+  enabled: boolean;
+  key: string;
+  type: 'Text' | 'File';
+  value: string;
+  file: File | null;
+  description: string;
+};
+
 // ── Component ────────────────────────────────────────────────────────────────
 export default function ApiTesterView() {
   const s = initialState();
@@ -46,6 +58,10 @@ export default function ApiTesterView() {
   const [statusText,     setStatusText]     = useState(s.statusText);
   const [statusCode,     setStatusCode]     = useState<number | string>(s.statusCode);
   const [isLoading,      setIsLoading]      = useState(false);
+  const [bodyType,       setBodyType]       = useState<BodyType>('raw');
+  const [formDataList,   setFormDataList]   = useState<FormDataItem[]>([
+    { id: Math.random().toString(), enabled: true, key: '', type: 'Text', value: '', file: null, description: '' }
+  ]);
   const [lastLogId,      setLastLogId]      = useState<number | null>(s.lastLogId);
   const [saveMsg,        setSaveMsg]        = useState(s.saveMsg);
 
@@ -112,7 +128,24 @@ export default function ApiTesterView() {
     const customHeaders: Record<string, string> = {};
     headersList.forEach((h) => { if (h.key.trim()) customHeaders[h.key.trim()] = h.value; });
 
-    const res = await sendRequest(fullUrl, selectedMethod, requestBody, customHeaders);
+    let finalBody: string | FormData | undefined;
+    if (bodyType === 'raw') {
+      finalBody = requestBody;
+    } else if (bodyType === 'form-data') {
+      const fd = new FormData();
+      formDataList.forEach(item => {
+        if (item.enabled && item.key.trim()) {
+          if (item.type === 'Text') {
+            fd.append(item.key.trim(), item.value);
+          } else if (item.type === 'File' && item.file) {
+            fd.append(item.key.trim(), item.file);
+          }
+        }
+      });
+      finalBody = fd;
+    }
+
+    const res = await sendRequest(fullUrl, selectedMethod, finalBody, customHeaders);
 
     setStatusCode(res.status);
     setStatusText(res.statusText);
@@ -354,18 +387,176 @@ export default function ApiTesterView() {
 
         {/* ── Body ── */}
         <div>
-          <label className="block text-sm font-medium text-zinc-300 mb-2">Body (JSON)</label>
-          <textarea
-            value={requestBody}
-            onChange={(e) => setRequestBody(e.target.value)}
-            placeholder={'{\n  "key": "value"\n}'}
-            className="
-              w-full h-40 bg-[#0f0f0f] text-zinc-300 p-4
-              rounded-lg border border-zinc-800 font-mono text-sm
-              outline-none focus:border-[#f05a28]
-              resize-y placeholder:text-zinc-700
-            "
-          />
+          <div className="flex items-center gap-4 mb-3 text-sm">
+            <span className="font-medium text-zinc-300">Body</span>
+            <div className="flex flex-wrap items-center gap-4">
+              {(['none', 'form-data', 'x-www-form-urlencoded', 'raw', 'binary', 'GraphQL'] as BodyType[]).map(type => (
+                <label key={type} className="flex items-center gap-1.5 cursor-pointer text-zinc-400 hover:text-zinc-200">
+                  <input
+                    type="radio"
+                    name="bodyType"
+                    value={type}
+                    checked={bodyType === type}
+                    onChange={(e) => setBodyType(e.target.value as BodyType)}
+                    className="accent-[#f05a28]"
+                  />
+                  {type}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {bodyType === 'raw' && (
+            <textarea
+              value={requestBody}
+              onChange={(e) => setRequestBody(e.target.value)}
+              placeholder={'{\n  "key": "value"\n}'}
+              className="
+                w-full h-40 bg-[#0f0f0f] text-zinc-300 p-4
+                rounded-lg border border-zinc-800 font-mono text-sm
+                outline-none focus:border-[#f05a28]
+                resize-y placeholder:text-zinc-700
+              "
+            />
+          )}
+
+          {bodyType === 'form-data' && (
+            <div className="border border-zinc-800 rounded-lg overflow-x-auto bg-[#0f0f0f]">
+              <div className="min-w-[600px]">
+                <div className="grid grid-cols-[auto_minmax(150px,1fr)_auto_minmax(200px,1fr)_minmax(150px,1fr)_auto] gap-2 p-2 border-b border-zinc-800 bg-zinc-900/50 text-xs font-medium text-zinc-400">
+                  <div className="w-6"></div>
+                  <div>Key</div>
+                  <div></div>
+                  <div>Value</div>
+                  <div>Description</div>
+                  <div className="w-8"></div>
+                </div>
+                {formDataList.map((item, index) => (
+                  <div key={item.id} className="grid grid-cols-[auto_minmax(150px,1fr)_auto_minmax(200px,1fr)_minmax(150px,1fr)_auto] gap-2 p-2 items-center border-b border-zinc-800/50 last:border-0 hover:bg-zinc-800/20">
+                    <div className="flex justify-center w-6">
+                      <input
+                        type="checkbox"
+                        checked={item.enabled}
+                        onChange={(e) => {
+                          const next = [...formDataList];
+                          next[index].enabled = e.target.checked;
+                          setFormDataList(next);
+                        }}
+                        className="accent-[#f05a28] w-3.5 h-3.5"
+                      />
+                    </div>
+                    <input
+                      type="text"
+                      value={item.key}
+                      placeholder="Key"
+                      onChange={(e) => {
+                        const next = [...formDataList];
+                        next[index].key = e.target.value;
+                        if (index === formDataList.length - 1 && e.target.value) {
+                          next.push({ id: Math.random().toString(), enabled: true, key: '', type: 'Text', value: '', file: null, description: '' });
+                        }
+                        setFormDataList(next);
+                      }}
+                      className="bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-600 w-full"
+                    />
+                    <div className="relative">
+                      <select
+                        value={item.type}
+                        onChange={(e) => {
+                          const next = [...formDataList];
+                          next[index].type = e.target.value as 'Text' | 'File';
+                          next[index].value = '';
+                          next[index].file = null;
+                          setFormDataList(next);
+                        }}
+                        className="bg-transparent text-xs text-zinc-400 outline-none cursor-pointer appearance-none pr-4"
+                      >
+                        <option value="Text" className="bg-[#111]">Text</option>
+                        <option value="File" className="bg-[#111]">File</option>
+                      </select>
+                      <ChevronDown className="w-3 h-3 text-zinc-500 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    </div>
+                    <div className="min-w-0">
+                      {item.type === 'Text' ? (
+                        <input
+                          type="text"
+                          value={item.value}
+                          placeholder="Value"
+                          onChange={(e) => {
+                            const next = [...formDataList];
+                            next[index].value = e.target.value;
+                            if (index === formDataList.length - 1 && e.target.value) {
+                              next.push({ id: Math.random().toString(), enabled: true, key: '', type: 'Text', value: '', file: null, description: '' });
+                            }
+                            setFormDataList(next);
+                          }}
+                          className="bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-600 w-full"
+                        />
+                      ) : (
+                        <label className="flex items-center cursor-pointer w-full group h-full py-1">
+                          <input
+                            type="file"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0] || null;
+                              const next = [...formDataList];
+                              next[index].file = file;
+                              if (index === formDataList.length - 1 && file) {
+                                next.push({ id: Math.random().toString(), enabled: true, key: '', type: 'Text', value: '', file: null, description: '' });
+                              }
+                              setFormDataList(next);
+                              // Reset input value so same file can be re-selected if removed
+                              e.target.value = '';
+                            }}
+                          />
+                          {item.file ? (
+                            <span className="text-sm text-zinc-100 bg-[#f05a28]/20 border border-[#f05a28]/30 px-2 py-0.5 rounded truncate max-w-full inline-block group-hover:bg-[#f05a28]/30 transition-colors">
+                              {item.file.name}
+                            </span>
+                          ) : (
+                            <span className="text-sm text-zinc-600 group-hover:text-zinc-400 transition-colors">
+                              Select files
+                            </span>
+                          )}
+                        </label>
+                      )}
+                    </div>
+                    <input
+                      type="text"
+                      value={item.description}
+                      placeholder="Description"
+                      onChange={(e) => {
+                        const next = [...formDataList];
+                        next[index].description = e.target.value;
+                        setFormDataList(next);
+                      }}
+                      className="bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-600 w-full"
+                    />
+                    <div className="flex justify-center w-8">
+                      {index !== formDataList.length - 1 && (
+                        <button
+                          onClick={() => {
+                            const next = [...formDataList];
+                            next.splice(index, 1);
+                            setFormDataList(next);
+                          }}
+                          className="text-zinc-500 hover:text-red-400 p-1 rounded transition-colors"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {bodyType !== 'raw' && bodyType !== 'form-data' && (
+            <div className="h-40 bg-[#0f0f0f] border border-zinc-800 rounded-lg flex items-center justify-center text-sm text-zinc-600">
+              This body type is not implemented in this demo.
+            </div>
+          )}
         </div>
       </div>
 

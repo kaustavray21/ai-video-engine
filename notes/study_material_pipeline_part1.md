@@ -40,7 +40,6 @@ media/
 > Per-file vectorstores are prefixed with `{sm_id}_` to prevent filename collisions when two study materials contain files with the same name (e.g., both have `notes.pdf`).
 
 **Path examples (SM id=3, name="Week 1 Notes", Course id=5, "Python Bootcamp"):**
-
 - Text file: `study_materials/Week_1_Notes/text/notes.txt`
 - Per-file VS: `study_materials_vectorstore/individual_vectorstores/3_notes_vectorstore/`
 - Full SM VS: `study_materials_vectorstore/complete_vectorstores/3_Week_1_Notes_vectorstore/`
@@ -94,9 +93,8 @@ class StudyMaterialFile(models.Model):
 ### [MODIFY] `apps/core/models/course.py`
 
 Add three fields:
-
 ```python
-study_material         = models.JSONField(null=True, blank=True)
+study_material          = models.JSONField(null=True, blank=True)
 # e.g. {"id": 3, "name": "Week 1 Notes", "description": "..."}
 
 merged_vectorstore_path = models.CharField(max_length=500, blank=True, default='')
@@ -106,11 +104,9 @@ study_materials_history = models.JSONField(default=list, blank=True)
 ```
 
 ### [MODIFY] `apps/core/models/__init__.py`
-
 Export `StudyMaterial`, `StudyMaterialFile`.
 
 ### [NEW] Migration
-
 Auto-generated for all model changes.
 
 ---
@@ -130,7 +126,6 @@ Auto-generated for all model changes.
 ```
 
 Logging:
-
 ```
 [ZipExtractor] Extracting: my_upload.zip → media/study_materials/Week_1_Notes/
 [ZipExtractor] Found nested zip: resources.zip → recursing into resources/
@@ -144,15 +139,23 @@ Logging:
 ### [EXISTING/MODIFY] `apps/core/services/file_converter.py`
 
 Already partially implemented. Fix outstanding issues:
-
 - `pdfplumber` import guarded: `try: import pdfplumber except ImportError: pdfplumber = None`
 - Same guard for `pptx`, `openpyxl`, `docx`, `striprtf`, `odfpy`
 - Each converter logs at INFO on success, WARNING on failure/skip
 
+**Supported formats:**
+
+| Category | Extensions |
+|---|---|
+| Documents | `.pdf`, `.doc`, `.docx`, `.txt`, `.md`, `.rtf`, `.ppt`, `.pptx`, `.odp` |
+| Spreadsheets | `.xls`, `.xlsx`, `.csv`, `.ods` |
+| Code/Config | `.py`, `.js`, `.ts`, `.jsx`, `.tsx`, `.vue`, `.svelte`, `.html`, `.css`, `.scss`, `.sass`, `.java`, `.go`, `.rs`, `.cpp`, `.c`, `.h`, `.cs`, `.swift`, `.kt`, `.php`, `.rb`, `.dart`, `.json`, `.yaml`, `.yml`, `.toml`, `.xml`, `.env`, `.sh`, `.bash`, `.zsh`, `Dockerfile`, `.graphql`, `.sql` |
+| Images | `.jpg`, `.jpeg`, `.png` (OCR), `.svg` (XML text nodes) |
+| Skipped | `.mp4`, `.mp3`, `.mov`, `.avi`, `.zip` |
+
 Returns `ConversionResult(success, text, error, skipped: bool)`.
 
 Logging:
-
 ```
 [FileConverter] .pdf  → extracted 4,821 chars from notes.pdf
 [FileConverter] .xlsx → failed (openpyxl not installed), skipping
@@ -200,7 +203,7 @@ PHASE 3 — MERGE INTO FULL SM VECTORSTORE
 
 PHASE 4 — CLEANUP
   1. Delete original zip
-  2. Delete raw extracted files (keep text/ and *.vectorstore/ folders)
+  2. Delete raw extracted files (keep text/ folder in study_materials/{name}/)
   3. Log: "[Processor] Cleanup complete"
 ```
 
@@ -234,10 +237,10 @@ class StudyMaterialMerger:
 
     def build(self, course, sm) -> MergeResult:
         # 1. Load course.vectorstore_path (original, video-only)
-        # 2. Load sm.vectorstore_location (full SM vectorstore)
+        # 2. Load sm.vectorstore_location (full SM merged vectorstore)
         # 3. FAISS.merge_from()
         # 4. Atomic save (temp → rename) to get_merged_vs_path()
-        # 5. Return MergeResult
+        # 5. Return MergeResult(success, merged_path, merged_relative)
 
     def replace(self, course, sm) -> MergeResult:
         # 1. shutil.rmtree(abs(course.merged_vectorstore_path))
@@ -245,7 +248,6 @@ class StudyMaterialMerger:
 ```
 
 Logging:
-
 ```
 [Merger] Building merged VS: "Python Bootcamp" + "Week 1 Notes"
 [Merger] Loaded course VS: 18,432 vectors

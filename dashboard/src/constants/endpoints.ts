@@ -17,7 +17,13 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
   { method: 'POST', path: '/videos/status/', label: 'Video Status', bodyHint: '{\n  "id": 1\n}' },
   { method: 'POST', path: '/videos/delete/', label: 'Delete Video', bodyHint: '{\n  "course_id": 1,\n  "id": 1\n}' },
   { method: 'POST', path: '/query/video/', label: 'Query Video', bodyHint: '{\n  "video_id": 1,\n  "question": "What is this about?"\n}' },
-  { method: 'POST', path: '/query/course/', label: 'Query Course', bodyHint: '{\n  "course_id": 1,\n  "question": "Summarize all topics"\n}' },
+  { method: 'POST', path: '/query/course/', label: 'Query Course', bodyHint: '{\n  "course_id": 1,\n  "question": "Summarize all topics",\n  "include_study_materials": true\n}' },
+  { method: 'POST', path: '/study-materials/upload/', label: 'Upload Study Material', bodyHint: 'multipart/form-data: name, description, zip_file' },
+  { method: 'GET',  path: '/study-materials/', label: 'List Study Materials', bodyHint: '' },
+  { method: 'GET',  path: '/study-materials/1/status/', label: 'SM Status', bodyHint: '' },
+  { method: 'POST', path: '/study-materials/1/query/', label: 'Query SM', bodyHint: '{\n  "question": "What is this about?"\n}' },
+  { method: 'POST', path: '/study-materials/1/retry/', label: 'Retry SM Processing', bodyHint: '' },
+  { method: 'POST', path: '/study-materials/1/merge-to-course/1/', label: 'Merge SM to Course', bodyHint: '' },
 ];
 
 export const COMMON_HEADERS: string[] = [

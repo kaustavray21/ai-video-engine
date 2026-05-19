@@ -1,13 +1,13 @@
 /* ── API service layer V2 ── */
 
-import type { ApiCallLog, DashboardStats } from '../types';
+import type { ApiCallLog, DashboardStats, StudyMaterial, Course } from '../types';
 
 const BASE = '/api';
 
 export async function sendRequest(
   endpoint: string,
   method: string = 'POST',
-  body?: string,
+  body?: string | FormData,
   headers?: Record<string, string>,
 ): Promise<{ data: unknown; status: number; statusText: string; latencyMs: number }> {
   const url = endpoint.startsWith('http') || endpoint.startsWith(BASE) ? endpoint : `${BASE}${endpoint}`;
@@ -16,8 +16,15 @@ export async function sendRequest(
   try {
     const opts: RequestInit = {
       method,
-      headers: headers ?? { 'Content-Type': 'application/json' },
+      headers: headers ?? {},
     };
+    
+    // Add default Content-Type if not provided and body is not FormData
+    const optsHeaders = opts.headers as Record<string, string>;
+    if (!optsHeaders['Content-Type'] && !(body instanceof FormData)) {
+      optsHeaders['Content-Type'] = 'application/json';
+    }
+
     if (body && method !== 'GET' && method !== 'HEAD') {
       opts.body = body;
     }
@@ -100,4 +107,95 @@ export async function fetchDashboardStats(): Promise<DashboardStats> {
     if (res.ok) return await res.json();
   } catch { /* silent */ }
   return { total_api_calls: 0, total_videos: 0, processed_videos: 0, chart_data: [] };
+}
+
+// ── Study Materials ──
+
+export async function uploadStudyMaterial(
+  name: string,
+  zipFile: File,
+  description?: string,
+): Promise<{ id: number; name: string; status: string } | null> {
+  try {
+    const formData = new FormData();
+    formData.append('name', name);
+    formData.append('zip_file', zipFile);
+    if (description) formData.append('description', description);
+
+    const res = await fetch(`${BASE}/study-materials/upload/`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (res.ok) return await res.json();
+    const err = await res.json();
+    console.error('Upload failed:', err);
+    return null;
+  } catch (e) {
+    console.error('Upload error:', e);
+    return null;
+  }
+}
+
+export async function fetchStudyMaterials(): Promise<StudyMaterial[]> {
+  try {
+    const res = await fetch(`${BASE}/study-materials/`, { method: 'GET' });
+    if (res.ok) return await res.json();
+  } catch { /* silent */ }
+  return [];
+}
+
+export async function fetchStudyMaterialStatus(id: number): Promise<StudyMaterial | null> {
+  try {
+    const res = await fetch(`${BASE}/study-materials/${id}/status/`, { method: 'GET' });
+    if (res.ok) return await res.json();
+  } catch { /* silent */ }
+  return null;
+}
+
+export async function queryStudyMaterial(id: number, question: string): Promise<{ answer: string; sources: unknown[] } | null> {
+  try {
+    const res = await fetch(`${BASE}/study-materials/${id}/query/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question }),
+    });
+    if (res.ok) return await res.json();
+  } catch { /* silent */ }
+  return null;
+}
+
+export async function retryStudyMaterial(id: number): Promise<{ status: string; study_material_id: number } | null> {
+  try {
+    const res = await fetch(`${BASE}/study-materials/${id}/retry/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (res.ok) return await res.json();
+  } catch { /* silent */ }
+  return null;
+}
+
+export async function mergeToCourse(smId: number, courseId: number): Promise<{ merged_vectorstore_path: string; study_material: unknown } | null> {
+  try {
+    const res = await fetch(`${BASE}/study-materials/${smId}/merge-to-course/${courseId}/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (res.ok) return await res.json();
+  } catch { /* silent */ }
+  return null;
+}
+
+export async function fetchCourses(): Promise<Course[]> {
+  try {
+    const res = await fetch(`${BASE}/courses/list/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (res.ok) {
+      const json = await res.json();
+      return json.courses ?? json;
+    }
+  } catch { /* silent */ }
+  return [];
 }

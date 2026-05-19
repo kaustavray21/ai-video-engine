@@ -40,7 +40,8 @@ class Command(BaseCommand):
         port = options['port']
 
         # ── Step 1: Build the React dashboard ──
-        if not skip_build:
+        is_reloader_child = os.environ.get('RUN_MAIN') == 'true'
+        if not skip_build and not is_reloader_child:
             if not (dashboard_dir / 'package.json').exists():
                 self.stderr.write(self.style.ERROR(
                     f'No package.json found in {dashboard_dir}'
@@ -72,7 +73,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(
                 '✓ Dashboard built → dashboard/dist/'
             ))
-        else:
+        elif not is_reloader_child:
             if (dashboard_dir / 'dist' / 'index.html').exists():
                 self.stdout.write(self.style.SUCCESS(
                     '✓ Using existing dashboard build'
@@ -84,13 +85,14 @@ class Command(BaseCommand):
                 ))
 
         # ── Step 2: Start Django dev server ──
-        self.stdout.write(self.style.SUCCESS(
-            f'\n🚀 Starting Django on http://127.0.0.1:{port}/'
-        ))
-        self.stdout.write(self.style.SUCCESS(
-            f'📊 Dashboard at http://127.0.0.1:{port}/dashboard/'
-        ))
-        self.stdout.write('')
+        if not is_reloader_child:
+            self.stdout.write(self.style.SUCCESS(
+                f'\n🚀 Starting Django on http://127.0.0.1:{port}/'
+            ))
+            self.stdout.write(self.style.SUCCESS(
+                f'📊 Dashboard at http://127.0.0.1:{port}/dashboard/'
+            ))
+            self.stdout.write('')
 
         from django.core.management import call_command
         call_command('runserver', f'0.0.0.0:{port}')

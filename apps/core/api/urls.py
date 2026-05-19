@@ -31,6 +31,11 @@ from apps.core.api.views.status_views import VideoStatusAPI, CourseStatusAPI
 from apps.core.api.views.dashboard_views import (
     DashboardLogAPI, DashboardLogsAPI, DashboardLogSaveAPI, DashboardStatsAPI,
 )
+from apps.core.api.views.study_material_views import (
+    StudyMaterialUploadAPI, StudyMaterialStatusAPI, StudyMaterialListAPI,
+    StudyMaterialMergeAPI, StudyMaterialQueryAPI,
+    StudyMaterialFilesAPI, StudyMaterialRetryAPI,
+)
 
 urlpatterns = [
     # ── Course Management ──
@@ -50,6 +55,15 @@ urlpatterns = [
     # ── Question Answering ──
     path('query/video/', VideoQueryAPI.as_view(), name='query_video'),
     path('query/course/', CourseQueryAPI.as_view(), name='query_course'),
+
+    # ── Study Materials ──
+    path('study-materials/', StudyMaterialListAPI.as_view(), name='study_material_list'),
+    path('study-materials/upload/', StudyMaterialUploadAPI.as_view(), name='study_material_upload'),
+    path('study-materials/<int:pk>/status/', StudyMaterialStatusAPI.as_view(), name='study_material_status'),
+    path('study-materials/<int:pk>/files/', StudyMaterialFilesAPI.as_view(), name='study_material_files'),
+    path('study-materials/<int:pk>/query/', StudyMaterialQueryAPI.as_view(), name='study_material_query'),
+    path('study-materials/<int:pk>/retry/', StudyMaterialRetryAPI.as_view(), name='study_material_retry'),
+    path('study-materials/<int:pk>/merge-to-course/<int:course_id>/', StudyMaterialMergeAPI.as_view(), name='study_material_merge'),
 
     # ── Dashboard ──
     path('dashboard/log/', DashboardLogAPI.as_view(), name='dashboard_log'),

@@ -31,6 +31,20 @@ class Course(models.Model):
         help_text='When the course vectorstore was last rebuilt'
     )
 
+    # Study material attachment
+    study_material = models.JSONField(
+        null=True, blank=True,
+        help_text='Currently attached study material metadata e.g. {"id": 3, "name": "Week 1 Notes"}'
+    )
+    merged_vectorstore_path = models.CharField(
+        max_length=500, blank=True, default='',
+        help_text='Path to merged (course + SM) vectorstore, relative to MEDIA_ROOT'
+    )
+    study_materials_history = models.JSONField(
+        default=list, blank=True,
+        help_text='History of replaced study materials (audit log)'
+    )
+
     # Content versioning — tracks when the course needs a vectorstore rebuild
     content_version = models.PositiveIntegerField(
         default=0,

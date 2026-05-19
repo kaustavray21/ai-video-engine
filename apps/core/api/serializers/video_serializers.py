@@ -45,3 +45,4 @@ class VideoQuerySerializer(serializers.Serializer):
 class CourseQuerySerializer(serializers.Serializer):
     course_id = serializers.IntegerField()
     question = serializers.CharField(max_length=2000)
+    include_study_materials = serializers.BooleanField(default=True, required=False)

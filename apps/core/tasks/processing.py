@@ -280,3 +280,7 @@ def rebuild_course_vectorstore_task(self, course_id: int):
     except Exception as e:
         logger.exception(f'Course vectorstore rebuild failed for course {course_id}: {e}')
         raise self.retry(exc=e)
+
+
+# Register study material tasks so Celery autodiscovery picks them up
+from apps.core.tasks.study_material_tasks import process_study_material  # noqa: F401, E402

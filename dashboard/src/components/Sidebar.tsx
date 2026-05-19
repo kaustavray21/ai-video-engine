@@ -1,6 +1,6 @@
-import { LayoutGrid, Activity, Clock, Hexagon } from 'lucide-react';
+import { LayoutGrid, Activity, Clock, Hexagon, FileArchive } from 'lucide-react';
 
-type Tab = 'dashboard' | 'api' | 'history';
+type Tab = 'dashboard' | 'api' | 'history' | 'materials';
 
 interface Props {
   activeTab: Tab;
@@ -8,9 +8,10 @@ interface Props {
 }
 
 const navItems: { key: Tab; icon: typeof LayoutGrid; label: string }[] = [
-  { key: 'dashboard', icon: LayoutGrid, label: 'Dashboard' },
-  { key: 'api',       icon: Activity,   label: 'API Tester' },
-  { key: 'history',   icon: Clock,      label: 'History' },
+  { key: 'dashboard', icon: LayoutGrid,  label: 'Dashboard' },
+  { key: 'api',       icon: Activity,    label: 'API Tester' },
+  { key: 'history',   icon: Clock,       label: 'History' },
+  { key: 'materials', icon: FileArchive, label: 'Study Materials' },
 ];
 
 export default function Sidebar({ activeTab, onTabChange }: Props) {

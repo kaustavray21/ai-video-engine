@@ -5,6 +5,8 @@ Django settings for AI Video Engine.
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+import datetime
+from logging.handlers import TimedRotatingFileHandler
 
 # Load .env
 load_dotenv()
@@ -187,6 +189,23 @@ CELERY_TASK_TIME_LIMIT      = 2400   # 40 min: hard SIGKILL
 LOGS_DIR = BASE_DIR / 'logs'
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Use a single log file per day with rotation at midnight
+log_filename = LOGS_DIR / 'ai_video_engine.log'
+
+def _log_namer(default_name):
+    """Rename rotated logs from ai_video_engine.log.2026-05-17 to ai_video_engine_2026-05-17.log"""
+    parts = default_name.rsplit('.log.', 1)
+    if len(parts) == 2:
+        return f'{parts[0]}_{parts[1]}.log'
+    return default_name
+
+
+class _CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.namer = _log_namer
+
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -202,8 +221,12 @@ LOGGING = {
             'formatter': 'verbose',
         },
         'file': {
-            'class': 'logging.FileHandler',
-            'filename': LOGS_DIR / 'ai_video_engine.log',
+            'class': 'config.settings._CustomTimedRotatingFileHandler',
+            'filename': str(log_filename),
+            'when': 'midnight',
+            'interval': 1,
+            'backupCount': 10,
+            'encoding': 'utf-8',
             'formatter': 'verbose',
         },
     },

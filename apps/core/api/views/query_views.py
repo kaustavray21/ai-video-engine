@@ -95,10 +95,14 @@ class CourseQueryAPI(APIView):
     POST /api/query/course/
     {
         "course_id": 1,
-        "question": "What topics were covered?"
+        "question": "What topics were covered?",
+        "include_study_materials": true
     }
 
-    Answer a question using the course-level merged FAISS vectorstore.
+    Answer a question using the course-level FAISS vectorstore.
+
+    include_study_materials=true  → use course.merged_vectorstore_path (course + SM)
+    include_study_materials=false → use course.vectorstore_path         (video only)
     """
 
     def post(self, request):
@@ -107,6 +111,7 @@ class CourseQueryAPI(APIView):
 
         course_id = serializer.validated_data['course_id']
         question = serializer.validated_data['question']
+        include_sm = serializer.validated_data.get('include_study_materials', True)
 
         try:
             course = Course.objects.get(id=course_id, is_active=True)
@@ -116,19 +121,26 @@ class CourseQueryAPI(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        if not course.vectorstore_created or not course.vectorstore_path:
+        # Determine which vectorstore to query
+        if include_sm and course.merged_vectorstore_path:
+            vs_rel_path = course.merged_vectorstore_path
+            vs_label = 'merged (course + study materials)'
+        elif course.vectorstore_path:
+            vs_rel_path = course.vectorstore_path
+            vs_label = 'course (video only)'
+        else:
             return Response(
                 {
-                    'error': 'Course vectorstore not yet built',
-                    'message': 'Please wait for all videos to be processed.',
+                    'error': 'No vectorstore available for this course',
+                    'message': 'Please wait for videos to be processed.',
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        vs_path = os.path.join(str(settings.MEDIA_ROOT), course.vectorstore_path)
+        vs_path = os.path.join(str(settings.MEDIA_ROOT), vs_rel_path)
         if not os.path.exists(vs_path):
             return Response(
-                {'error': 'Course vectorstore not found on disk'},
+                {'error': f'Vectorstore not found on disk: {vs_rel_path}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
@@ -155,4 +167,5 @@ class CourseQueryAPI(APIView):
             'course_title': course.title,
             'question': question,
             'source_chunks': result.source_chunks,
+            'vectorstore_used': vs_label,
         })
