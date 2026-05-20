@@ -83,7 +83,23 @@ class StudyMaterialStatusAPI(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
         serializer = StudyMaterialSerializer(sm)
-        return Response(serializer.data)
+        data = serializer.data
+
+        # Attach per-file processing status
+        files = StudyMaterialFile.objects.filter(study_material=sm).order_by('id')
+        data['files'] = [
+            {
+                'file_id': f.id,
+                'original_name': f.original_name,
+                'file_type': f.file_type,
+                'status': f.status,
+                'chunk_count': f.chunk_count,
+                'error': f.error if f.status == 'failed' else '',
+            }
+            for f in files
+        ]
+
+        return Response(data)
 
 
 class StudyMaterialListAPI(APIView):
@@ -199,66 +215,50 @@ class StudyMaterialQueryAPI(APIView):
         vs_path = os.path.join(
             str(settings.MEDIA_ROOT), sm.vectorstore_location,
         )
-        if not os.path.exists(vs_path):
-            return Response(
-                {'error': 'Vectorstore not found on disk'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
 
-        from apps.core.services.vectorstore import VectorStoreManager
+        from apps.core.services.vectorstore import VectorStoreManager, OVERVIEW_PATTERNS
+
+        # Build file manifest from DB for manifest injection on overview queries
+        is_overview = any(p in question.lower() for p in OVERVIEW_PATTERNS)
+        file_manifest = None
+        if is_overview:
+            sm_files = StudyMaterialFile.objects.filter(study_material=sm).order_by('id')
+            file_manifest = [
+                {
+                    'name': f.original_name,
+                    'file_type': f.file_type,
+                    'status': f.status,
+                }
+                for f in sm_files
+            ]
 
         manager = VectorStoreManager(openai_api_key=settings.OPENAI_API_KEY)
-        vs = manager.load(vs_path)
-        if vs is None:
+        result = manager.query(
+            vectorstore_path=vs_path,
+            question=question,
+            course_title=sm.name,
+            video_title='Study Material',
+            filter_source_file=request.data.get('filter_source_file'),
+            filter_file_type=request.data.get('filter_file_type'),
+            file_manifest=file_manifest,
+        )
+
+        if not result.success:
             return Response(
-                {'error': 'Failed to load vectorstore'},
+                {'error': result.error},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        try:
-            docs = vs.similarity_search(question, k=5)
-            if not docs:
-                return Response(
-                    {'error': 'No relevant chunks found'},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-
-            context = '\n\n'.join(d.page_content for d in docs)
-
-            from apps.core.services.vectorstore import QA_PROMPT
-            prompt = QA_PROMPT.format(
-                context=context,
-                question=question,
-                course_title=sm.name,
-                video_title='Study Material',
-            )
-            response_text = manager.llm.invoke(prompt).content
-
-            sources = []
-            for doc in docs:
-                meta = doc.metadata
-                sources.append({
-                    'original_name': meta.get('original_name', ''),
-                    'type': meta.get('type', ''),
-                    'chunk_index': meta.get('chunk_index', 0),
-                })
-
-            return Response({
-                'status': 'success',
-                'answer': response_text,
-                'study_material_id': sm.id,
-                'study_material_name': sm.name,
-                'question': question,
-                'source_chunks': len(docs),
-                'sources': sources,
-            })
-
-        except Exception as e:
-            logger.exception(f'Study material query failed: {e}')
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+        return Response({
+            'status': 'success',
+            'answer': result.answer,
+            'study_material_id': sm.id,
+            'study_material_name': sm.name,
+            'question': question,
+            'source_chunks': result.source_chunks,
+            'retrieved_sources': result.retrieved_sources,
+            'retrieved_chunk_count': result.retrieved_chunk_count,
+        })
 
 
 class StudyMaterialFilesAPI(APIView):
@@ -319,4 +319,154 @@ class StudyMaterialRetryAPI(APIView):
             'status': 'queued_for_retry',
             'processed_files': sm.processed_files,
             'files_count': sm.files_count,
+        })
+
+
+class StudyMaterialFileQueryAPI(APIView):
+    """
+    POST /api/study-materials/files/<file_id>/query/
+
+    Query an individual file's vectorstore by its StudyMaterialFile PK.
+    """
+
+    def post(self, request, file_id):
+        serializer = StudyMaterialQuerySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        question = serializer.validated_data['question']
+
+        try:
+            smf = StudyMaterialFile.objects.select_related('study_material').get(pk=file_id)
+        except StudyMaterialFile.DoesNotExist:
+            return Response(
+                {'error': f'StudyMaterialFile {file_id} not found'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if smf.status != StudyMaterialFile.STATUS_COMPLETED:
+            return Response(
+                {'error': f'File status is "{smf.status}", must be "completed"'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not smf.vectorstore_path:
+            return Response(
+                {'error': 'File has no vectorstore (may have been skipped)'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        vs_path = os.path.join(str(settings.MEDIA_ROOT), smf.vectorstore_path)
+
+        from apps.core.services.vectorstore import VectorStoreManager
+
+        manager = VectorStoreManager(openai_api_key=settings.OPENAI_API_KEY)
+        result = manager.query(
+            vectorstore_path=vs_path,
+            question=question,
+            course_title=smf.study_material.name,
+            video_title='Study Material',
+        )
+
+        if not result.success:
+            return Response(
+                {'error': result.error},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response({
+            'status': 'success',
+            'answer': result.answer,
+            'file_id': smf.id,
+            'file_name': smf.original_name,
+            'file_type': smf.file_type,
+            'study_material_id': smf.study_material.id,
+            'study_material_name': smf.study_material.name,
+            'question': question,
+            'source_chunks': result.source_chunks,
+            'retrieved_sources': result.retrieved_sources,
+            'retrieved_chunk_count': result.retrieved_chunk_count,
+        })
+
+
+class StudyMaterialDeleteAPI(APIView):
+    """
+    DELETE /api/study-materials/<int:pk>/delete/
+
+    Completely deletes a Study Material and all associated resources:
+    1. Blocks deletion if it is currently attached to any Course.
+    2. Deletes original uploaded zip if present.
+    3. Deletes extracted raw & converted text directory.
+    4. Deletes all per-file vectorstores.
+    5. Deletes merged vectorstore.
+    6. Deletes DB records (cascade deletes StudyMaterialFiles).
+    """
+
+    def delete(self, request, pk):
+        from django.shortcuts import get_object_or_404
+        import shutil
+
+        sm = get_object_or_404(StudyMaterial, pk=pk)
+
+        # 1. Check if attached to courses
+        if sm.attached_to_courses.exists():
+            course_names = list(sm.attached_to_courses.values_list('title', flat=True))
+            return Response(
+                {
+                    'error': 'Cannot delete Study Material because it is currently attached to one or more courses.',
+                    'attached_courses': course_names
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        deleted_resources = []
+        errors = []
+
+        # 2. Delete original zip
+        if sm.file_path and os.path.exists(sm.file_path):
+            try:
+                os.remove(sm.file_path)
+                deleted_resources.append('zip_file')
+            except Exception as e:
+                errors.append(f'Failed to delete zip: {e}')
+
+        # Helper to construct directory slug securely (same logic as in zip_extractor/processor)
+        slug = sm.name.strip().replace(' ', '_').lower()
+
+        # 3. Delete extracted raw & converted text directory
+        raw_dir = os.path.join(str(settings.MEDIA_ROOT), 'study_materials', slug)
+        if os.path.exists(raw_dir):
+            try:
+                shutil.rmtree(raw_dir)
+                deleted_resources.append('extracted_files')
+            except Exception as e:
+                errors.append(f'Failed to delete raw directory: {e}')
+
+        # 4. Delete all per-file vectorstores
+        for smf in sm.files.all():
+            if smf.vectorstore_path:
+                vs_abs = os.path.join(str(settings.MEDIA_ROOT), smf.vectorstore_path)
+                if os.path.exists(vs_abs):
+                    try:
+                        shutil.rmtree(vs_abs)
+                    except Exception as e:
+                        errors.append(f'Failed to delete file vectorstore for {smf.original_name}: {e}')
+
+        # 5. Delete merged vectorstore
+        if sm.vectorstore_location:
+            merged_vs_abs = os.path.join(str(settings.MEDIA_ROOT), sm.vectorstore_location)
+            if os.path.exists(merged_vs_abs):
+                try:
+                    shutil.rmtree(merged_vs_abs)
+                    deleted_resources.append('merged_vectorstore')
+                except Exception as e:
+                    errors.append(f'Failed to delete merged vectorstore: {e}')
+
+        # 6. Delete DB record
+        sm.delete()
+
+        return Response({
+            'status': 'success',
+            'message': f'Study Material "{sm.name}" deleted successfully.',
+            'deleted_resources': deleted_resources,
+            'cleanup_errors': errors,
         })

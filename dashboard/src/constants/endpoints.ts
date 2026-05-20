@@ -22,7 +22,9 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
   { method: 'GET',  path: '/study-materials/', label: 'List Study Materials', bodyHint: '' },
   { method: 'GET',  path: '/study-materials/1/status/', label: 'SM Status', bodyHint: '' },
   { method: 'POST', path: '/study-materials/1/query/', label: 'Query SM', bodyHint: '{\n  "question": "What is this about?"\n}' },
+  { method: 'POST', path: '/study-materials/files/1/query/', label: 'Query File', bodyHint: '{\n  "question": "What is this file about?"\n}' },
   { method: 'POST', path: '/study-materials/1/retry/', label: 'Retry SM Processing', bodyHint: '' },
+  { method: 'DELETE', path: '/study-materials/1/delete/', label: 'Delete SM', bodyHint: '' },
   { method: 'POST', path: '/study-materials/1/merge-to-course/1/', label: 'Merge SM to Course', bodyHint: '' },
 ];
 

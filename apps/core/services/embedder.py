@@ -224,6 +224,103 @@ class Embedder:
             logger.exception(f'Vectorstore creation failed: {e}')
             return EmbedResult(success=False, error=str(e))
 
+    def embed_chunks(
+        self,
+        chunks,
+        save_path: str,
+    ) -> 'EmbedResult':
+        """
+        Embed pre-split EnrichedChunk objects with per-chunk metadata.
+
+        Unlike create_vectorstore(), this method skips the internal
+        RecursiveCharacterTextSplitter — chunks are already split by
+        ModalityRouter handlers. Each chunk carries its own metadata dict.
+
+        Args:
+            chunks: List of EnrichedChunk (text + metadata dict).
+            save_path: Absolute directory path to save the FAISS index.
+
+        Returns:
+            EmbedResult with the saved path and chunk count.
+        """
+        if not chunks:
+            return EmbedResult(success=False, error='No chunks provided')
+
+        try:
+            texts = [c.text for c in chunks]
+            metadatas = [c.metadata.copy() for c in chunks]
+
+            logger.info(f'Embedding {len(texts)} pre-split chunks')
+
+            # Embed — async batched path (same as create_vectorstore)
+            vectors = asyncio.run(self._embed_all(texts))
+
+            if len(vectors) != len(texts):
+                return EmbedResult(
+                    success=False,
+                    error=f'Embedding mismatch: {len(vectors)} vectors for {len(texts)} chunks',
+                )
+
+            # Build FAISS index from pre-computed embeddings + per-chunk metadata
+            text_embedding_pairs: List[Tuple[str, List[float]]] = list(zip(texts, vectors))
+            vectorstore = FAISS.from_embeddings(
+                text_embeddings=text_embedding_pairs,
+                embedding=self.embeddings,
+                metadatas=metadatas,
+            )
+
+            os.makedirs(save_path, exist_ok=True)
+            vectorstore.save_local(save_path)
+
+            # Build BM25 sparse index alongside FAISS for hybrid search
+            try:
+                import pickle, re as _re
+                from rank_bm25 import BM25Okapi
+
+                def _stem_tokens(source_file: str) -> list:
+                    """Split a filename stem into searchable word tokens.
+
+                    'process_live_videos.py' → ['process', 'live', 'videos']
+                    'live_video_pipeline_vulnerabilities.svg' →
+                        ['live', 'video', 'pipeline', 'vulnerabilities']
+                    These are prepended to each chunk's token list so keyword
+                    queries about the file's topic always match it strongly.
+                    """
+                    stem = _re.sub(r'\.[^.]+$', '', source_file)  # strip extension
+                    parts = _re.split(r'[\s_\-.]+', stem.lower())
+                    tokens = []
+                    for p in parts:
+                        # CamelCase split: 'processLiveVideo' → ['process','live','video']
+                        tokens += [w.lower() for w in _re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)', p) or [p]]
+                    return [t for t in tokens if len(t) > 2]
+
+                # Prepend filename tokens to each chunk's BM25 corpus entry so
+                # queries containing filename keywords always retrieve that file.
+                tokenized = [
+                    _stem_tokens(m.get('source_file', '')) + t.lower().split()
+                    for m, t in zip(metadatas, texts)
+                ]
+                # b=0.5: lower length normalization penalty for 1-chunk small files
+                bm25 = BM25Okapi(tokenized, b=0.5)
+                bm25_path = os.path.join(save_path, 'bm25_index.pkl')
+                with open(bm25_path, 'wb') as f:
+                    pickle.dump({'bm25': bm25, 'corpus': tokenized, 'metadatas': metadatas}, f)
+                logger.info(f'BM25 index saved: {bm25_path}')
+            except Exception as bm25_err:
+                logger.warning(f'BM25 index build failed (non-fatal): {bm25_err}')
+
+            logger.info(f'Vectorstore saved: {save_path} ({len(texts)} chunks with metadata)')
+
+            return EmbedResult(
+                success=True,
+                vectorstore_path=save_path,
+                chunk_count=len(texts),
+            )
+
+        except Exception as e:
+            logger.exception(f'embed_chunks failed: {e}')
+            return EmbedResult(success=False, error=str(e))
+
     # ─────────────────────────────────────────────────────────────────────────
     # Async batched embedding internals
     # ─────────────────────────────────────────────────────────────────────────

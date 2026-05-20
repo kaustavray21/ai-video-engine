@@ -24,6 +24,7 @@ from langchain_openai import OpenAIEmbeddings
 from apps.core.services.zip_extractor import ZipExtractor, FileEntry
 from apps.core.services.file_converter import FileConverter
 from apps.core.services.embedder import Embedder, EmbedResult
+from apps.core.services.modality_router import ModalityRouter, EnrichedChunk
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class StudyMaterialProcessor:
         self.extractor = ZipExtractor()
         self.converter = FileConverter()
         self.embedder = Embedder(openai_api_key=self.openai_api_key)
+        self.router = ModalityRouter()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Public entry point
@@ -221,6 +223,29 @@ class StudyMaterialProcessor:
                     'study_materials', self._slug(sm.name), 'text', txt_filename
                 )
 
+                # Route through modality-aware chunking
+                enriched_chunks = self.router.route(
+                    file_entry=entry,
+                    converted_text=conv.text,
+                    study_material_id=sm.id,
+                )
+
+                if not enriched_chunks:
+                    smf.status = StudyMaterialFile.STATUS_SKIPPED
+                    smf.processed_at = timezone.now()
+                    smf.save(update_fields=['status', 'processed_at'])
+                    logger.info(f'[Processor] [{i}/{total}] ⊘ {smf.original_name} (no chunks)')
+                    continue
+
+                # Save per-file chunk metadata JSON for inspection/debugging
+                self._save_chunks_metadata(
+                    chunks=enriched_chunks,
+                    stem=stem,
+                    original_name=smf.original_name,
+                    file_type=smf.file_type,
+                    text_dir=text_dir,
+                )
+
                 # Build per-file vectorstore
                 vs_folder = f'{sm.id}_{stem}_vectorstore'
                 vs_path = os.path.join(
@@ -229,15 +254,8 @@ class StudyMaterialProcessor:
                 vs_relative = os.path.join('study_materials_vectorstore', 'individual_vectorstores', vs_folder)
 
                 embed_result = self._embed_with_segmentation(
-                    text=conv.text,
+                    chunks=enriched_chunks,
                     save_path=vs_path,
-                    metadata={
-                        'source': smf.original_name,
-                        'relative_path': smf.relative_path,
-                        'file_type': smf.file_type,
-                        'study_material_id': sm.id,
-                        'study_material_name': sm.name,
-                    },
                 )
 
                 # Update StudyMaterialFile record
@@ -284,20 +302,18 @@ class StudyMaterialProcessor:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _embed_with_segmentation(
-        self, text: str, save_path: str, metadata: dict,
+        self, chunks: list, save_path: str,
     ) -> EmbedResult:
         """
-        Embed text with automatic segmentation for very large files.
+        Embed EnrichedChunk list with automatic segmentation for very large files.
         If chunks > MAX_CHUNKS_PER_SEGMENT, split into segments,
         embed each separately, then merge into one per-file vectorstore.
         """
-        # Pre-chunk to check size
-        chunks = self.embedder.text_splitter.split_text(text)
         total_chunks = len(chunks)
 
         if total_chunks <= MAX_CHUNKS_PER_SEGMENT:
-            # Small enough — single-shot
-            result = self.embedder.create_vectorstore(text, save_path, metadata)
+            # Small enough — single-shot via embed_chunks
+            result = self.embedder.embed_chunks(chunks, save_path)
             if not result.success:
                 raise ValueError(f'Embedding failed: {result.error}')
             return result
@@ -319,14 +335,12 @@ class StudyMaterialProcessor:
         for seg_start in range(0, total_chunks, MAX_CHUNKS_PER_SEGMENT):
             segment_count += 1
             seg_chunks = chunks[seg_start: seg_start + MAX_CHUNKS_PER_SEGMENT]
-            seg_text = '\n\n'.join(seg_chunks)
 
             seg_path = f'{save_path}.seg{segment_count}'
 
-            result = self.embedder.create_vectorstore(
-                transcript_text=seg_text,
+            result = self.embedder.embed_chunks(
+                chunks=seg_chunks,
                 save_path=seg_path,
-                metadata=metadata,
             )
 
             if not result.success:
@@ -422,6 +436,12 @@ class StudyMaterialProcessor:
         tmp_path = vs_path + '.tmp'
         os.makedirs(tmp_path, exist_ok=True)
         merged_vs.save_local(tmp_path)
+
+        # Rebuild BM25 from the merged docstore so hybrid search works on the
+        # complete vectorstore (per-file BM25 indexes are NOT carried over by
+        # FAISS.merge_from — they must be rebuilt from the merged corpus).
+        self._rebuild_bm25(merged_vs, tmp_path)
+
         if os.path.exists(vs_path):
             shutil.rmtree(vs_path)
         os.rename(tmp_path, vs_path)
@@ -431,6 +451,50 @@ class StudyMaterialProcessor:
             f'[Processor] Phase 3: Merged {n} file vectorstores → {vs_path}'
         )
         return vs_relative
+
+    @staticmethod
+    def _rebuild_bm25(vectorstore, save_dir: str) -> None:
+        """
+        Build a fresh BM25Okapi index from all documents in a FAISS docstore
+        and save it as bm25_index.pkl alongside the FAISS files.
+
+        Uses filename-stem token injection and b=0.5 length normalization to
+        match the per-file index built by Embedder.embed_chunks().
+        """
+        try:
+            import pickle, re as _re
+            from rank_bm25 import BM25Okapi
+
+            all_docs = list(vectorstore.docstore._dict.values())
+            if not all_docs:
+                logger.warning('[Processor] _rebuild_bm25: docstore is empty, skipping')
+                return
+
+            texts = [doc.page_content for doc in all_docs]
+            metadatas = [doc.metadata or {} for doc in all_docs]
+
+            def _stem_tokens(source_file: str) -> list:
+                stem = _re.sub(r'\.[^.]+$', '', source_file)
+                parts = _re.split(r'[\s_\-.]+', stem.lower())
+                tokens = []
+                for p in parts:
+                    tokens += [w.lower() for w in _re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)', p) or [p]]
+                return [t for t in tokens if len(t) > 2]
+
+            tokenized = [
+                _stem_tokens(m.get('source_file') or m.get('video_title', '')) + t.lower().split()
+                for m, t in zip(metadatas, texts)
+            ]
+            bm25 = BM25Okapi(tokenized, b=0.5)
+            bm25_path = os.path.join(save_dir, 'bm25_index.pkl')
+            with open(bm25_path, 'wb') as f:
+                pickle.dump({'bm25': bm25, 'corpus': tokenized, 'metadatas': metadatas}, f)
+
+            logger.info(
+                f'[Processor] Phase 3: BM25 rebuilt — {len(texts):,} docs → {bm25_path}'
+            )
+        except Exception as bm25_err:
+            logger.warning(f'[Processor] Phase 3: BM25 rebuild failed (non-fatal): {bm25_err}')
 
     # ─────────────────────────────────────────────────────────────────────────
     # Phase 4 — Cleanup
@@ -475,3 +539,60 @@ class StudyMaterialProcessor:
     @staticmethod
     def _slug(text: str) -> str:
         return re.sub(r'[^a-zA-Z0-9]+', '_', text).strip('_')
+
+    @staticmethod
+    def _save_chunks_metadata(
+        chunks: list,
+        stem: str,
+        original_name: str,
+        file_type: str,
+        text_dir: str,
+    ) -> None:
+        """
+        Save per-file chunk text + metadata as a JSON file in the text/ directory.
+
+        Output: {text_dir}/{stem}_chunks.json
+        Format:
+            {
+                "source_file": "filename.pdf",
+                "file_type": ".pdf",
+                "chunk_count": 19,
+                "chunks": [
+                    {"chunk_index": 0, "text": "...", "metadata": {...}},
+                    ...
+                ]
+            }
+
+        Non-fatal — a failure here never aborts the pipeline.
+        """
+        import json
+        try:
+            json_filename = f'{stem}_chunks.json'
+            json_path = os.path.join(text_dir, json_filename)
+
+            # Handle duplicate stems (same as .txt file dedup)
+            counter = 1
+            base = json_path
+            while os.path.exists(json_path):
+                json_path = base.replace('_chunks.json', f'_{counter}_chunks.json')
+                counter += 1
+
+            payload = {
+                'source_file': original_name,
+                'file_type': file_type,
+                'chunk_count': len(chunks),
+                'chunks': [
+                    {
+                        'chunk_index': c.metadata.get('chunk_index', idx),
+                        'text': c.text,
+                        'metadata': c.metadata,
+                    }
+                    for idx, c in enumerate(chunks)
+                ],
+            }
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False, default=str)
+
+            logger.debug(f'[Processor] Chunk metadata saved: {json_path} ({len(chunks)} chunks)')
+        except Exception as meta_err:
+            logger.warning(f'[Processor] _save_chunks_metadata failed (non-fatal): {meta_err}')

@@ -152,9 +152,21 @@ export async function fetchStudyMaterialStatus(id: number): Promise<StudyMateria
   return null;
 }
 
-export async function queryStudyMaterial(id: number, question: string): Promise<{ answer: string; sources: unknown[] } | null> {
+export async function queryStudyMaterial(id: number, question: string): Promise<{ answer: string; sources: unknown[]; retrieved_sources: unknown[]; retrieved_chunk_count: number } | null> {
   try {
     const res = await fetch(`${BASE}/study-materials/${id}/query/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question }),
+    });
+    if (res.ok) return await res.json();
+  } catch { /* silent */ }
+  return null;
+}
+
+export async function queryStudyMaterialFile(fileId: number, question: string): Promise<{ answer: string; sources: unknown[]; retrieved_sources: unknown[]; retrieved_chunk_count: number } | null> {
+  try {
+    const res = await fetch(`${BASE}/study-materials/files/${fileId}/query/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question }),
@@ -184,6 +196,21 @@ export async function mergeToCourse(smId: number, courseId: number): Promise<{ m
     if (res.ok) return await res.json();
   } catch { /* silent */ }
   return null;
+}
+
+export async function deleteStudyMaterial(smId: number): Promise<{ success: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${BASE}/study-materials/${smId}/delete/`, {
+      method: 'DELETE',
+    });
+    const data = await res.json();
+    if (res.ok) {
+      return { success: true };
+    }
+    return { success: false, error: data.error || 'Failed to delete' };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
 }
 
 export async function fetchCourses(): Promise<Course[]> {

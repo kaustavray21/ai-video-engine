@@ -7,6 +7,7 @@ from apps.core.services.zip_extractor import ZipExtractor, FileEntry
 from apps.core.services.file_converter import FileConverter, ConversionResult
 from apps.core.services.study_material_processor import StudyMaterialProcessor, ProcessResult
 from apps.core.services.study_material_merger import StudyMaterialMerger, MergeResult
+from apps.core.services.modality_router import ModalityRouter, EnrichedChunk
 
 __all__ = [
     'VimeoDownloader',
@@ -22,4 +23,6 @@ __all__ = [
     'ProcessResult',
     'StudyMaterialMerger',
     'MergeResult',
+    'ModalityRouter',
+    'EnrichedChunk',
 ]

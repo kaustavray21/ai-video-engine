@@ -1,13 +1,15 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Upload, Search, GitMerge, RefreshCw, FileArchive, CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react';
-import type { StudyMaterial, Course } from '../types';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Upload, Search, GitMerge, RefreshCw, FileArchive, CheckCircle, XCircle, Clock, Loader2, AlertTriangle, ChevronDown, ChevronRight, FolderOpen, Trash2 } from 'lucide-react';
+import type { StudyMaterial, Course, StudyMaterialFile } from '../types';
 import {
   uploadStudyMaterial,
   fetchStudyMaterials,
   fetchStudyMaterialStatus,
   queryStudyMaterial,
+  queryStudyMaterialFile,
   mergeToCourse,
   fetchCourses,
+  deleteStudyMaterial,
 } from '../services/api';
 
 export default function StudyMaterialsView() {
@@ -23,10 +25,18 @@ export default function StudyMaterialsView() {
 
   // Query
   const [querySmId, setQuerySmId] = useState<number | null>(null);
+  const [queryFileId, setQueryFileId] = useState<number | null>(null);
   const [queryQuestion, setQueryQuestion] = useState('');
   const [queryAnswer, setQueryAnswer] = useState('');
   const [querySources, setQuerySources] = useState<unknown[]>([]);
+  const [retrievedSources, setRetrievedSources] = useState<Array<{source_file: string; file_type: string; chunk_index: number; chunk_role: string; score: number; header_context?: string; page_number?: number; function_name?: string}>>([]);
+  const [sourcesExpanded, setSourcesExpanded] = useState(false);
   const [querying, setQuerying] = useState(false);
+
+  // Files view
+  const [expandedSmId, setExpandedSmId] = useState<number | null>(null);
+  const [expandedSmFiles, setExpandedSmFiles] = useState<StudyMaterialFile[]>([]);
+  const [loadingFiles, setLoadingFiles] = useState(false);
 
   // Merge
   const [mergeSmId, setMergeSmId] = useState<number | null>(null);
@@ -69,15 +79,45 @@ export default function StudyMaterialsView() {
     setUploading(false);
   };
 
-  const handleQuery = async (id: number) => {
+  const handleExpandFiles = async (id: number) => {
+    if (expandedSmId === id) {
+      setExpandedSmId(null);
+      setExpandedSmFiles([]);
+      return;
+    }
+    setExpandedSmId(id);
+    setLoadingFiles(true);
+    const status = await fetchStudyMaterialStatus(id);
+    if (status && status.files) {
+      setExpandedSmFiles(status.files);
+    } else {
+      setExpandedSmFiles([]);
+    }
+    setLoadingFiles(false);
+  };
+
+  const handleQuery = async () => {
     if (!queryQuestion.trim()) return;
+    if (querySmId === null && queryFileId === null) return;
     setQuerying(true);
     setQueryAnswer('');
     setQuerySources([]);
-    const result = await queryStudyMaterial(id, queryQuestion.trim());
+    setRetrievedSources([]);
+    setSourcesExpanded(false);
+    
+    let result;
+    if (queryFileId !== null) {
+      result = await queryStudyMaterialFile(queryFileId, queryQuestion.trim());
+    } else if (querySmId !== null) {
+      result = await queryStudyMaterial(querySmId, queryQuestion.trim());
+    }
+    
     if (result) {
       setQueryAnswer(result.answer);
       setQuerySources(result.sources);
+      if (result.retrieved_sources) {
+        setRetrievedSources(result.retrieved_sources as typeof retrievedSources);
+      }
     } else {
       setQueryAnswer('Query failed.');
     }
@@ -97,6 +137,23 @@ export default function StudyMaterialsView() {
       setMergeResult('Merge failed or already merged.');
     }
     setMerging(false);
+  };
+
+  const handleDelete = async (sm: StudyMaterial) => {
+    if (sm.attached_courses_count > 0) {
+      alert('Cannot delete: This study material is attached to one or more courses. Please detach it first.');
+      return;
+    }
+    if (!confirm(`Are you sure you want to permanently delete "${sm.name}" and all its files?`)) return;
+    
+    setLoading(true);
+    const result = await deleteStudyMaterial(sm.id);
+    if (result.success) {
+      await loadMaterials();
+    } else {
+      alert(result.error);
+    }
+    setLoading(false);
   };
 
   const statusIcon = (status: string) => {
@@ -198,12 +255,21 @@ export default function StudyMaterialsView() {
               </thead>
               <tbody>
                 {materials.map(sm => (
-                  <tr key={sm.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/30">
+                  <React.Fragment key={sm.id}>
+                  <tr className="border-b border-zinc-800/50 hover:bg-zinc-800/30">
                     <td className="py-2 px-2 text-zinc-400">{sm.id}</td>
                     <td className="py-2 px-2 text-zinc-100 font-medium">{sm.name}</td>
                     <td className={`py-2 px-2 flex items-center gap-1.5 ${statusColor(sm.status)}`}>
                       {statusIcon(sm.status)}
                       <span className="capitalize">{sm.status}</span>
+                      {sm.status === 'failed' && sm.error_log && (
+                        <span className="relative group">
+                          <AlertTriangle className="w-3.5 h-3.5 text-red-400 cursor-help" />
+                          <span className="absolute bottom-full left-0 mb-1 hidden group-hover:block bg-zinc-900 border border-zinc-700 text-xs text-red-300 px-2 py-1 rounded shadow-lg max-w-xs whitespace-pre-wrap z-10">
+                            {sm.error_log}
+                          </span>
+                        </span>
+                      )}
                     </td>
                     <td className="py-2 px-2 text-zinc-400">{sm.files_count}</td>
                     <td className="py-2 px-2 text-zinc-400">{sm.attached_courses_count}</td>
@@ -225,10 +291,90 @@ export default function StudyMaterialsView() {
                           >
                             <GitMerge className="w-4 h-4" />
                           </button>
+                          <button
+                            onClick={() => handleExpandFiles(sm.id)}
+                            className={`p-1.5 rounded transition-colors ${expandedSmId === sm.id ? 'text-white bg-zinc-700' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'}`}
+                            title="View Files"
+                          >
+                            <FolderOpen className="w-4 h-4" />
+                          </button>
                         </>
                       )}
+                      <button
+                        onClick={() => handleDelete(sm)}
+                        className="text-zinc-400 hover:text-red-400 p-1.5 rounded hover:bg-zinc-800 transition-colors"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </td>
                   </tr>
+                  {expandedSmId === sm.id && (
+                    <tr className="bg-zinc-900/30 border-b border-zinc-800/50">
+                      <td colSpan={7} className="px-6 py-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <h4 className="text-sm font-medium text-zinc-300">Files in {sm.name}</h4>
+                          <button onClick={() => setExpandedSmId(null)} className="text-zinc-500 hover:text-white text-xs">Close</button>
+                        </div>
+                        {loadingFiles ? (
+                          <div className="flex items-center gap-2 text-zinc-400 text-sm py-2">
+                            <Loader2 className="w-4 h-4 animate-spin" /> Loading files...
+                          </div>
+                        ) : expandedSmFiles.length === 0 ? (
+                          <p className="text-zinc-500 text-sm">No files found.</p>
+                        ) : (
+                          <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+                            <table className="w-full text-xs">
+                              <thead className="bg-zinc-800/50 text-zinc-400">
+                                <tr>
+                                  <th className="text-left py-2 px-3 font-medium">File ID</th>
+                                  <th className="text-left py-2 px-3 font-medium">Name</th>
+                                  <th className="text-left py-2 px-3 font-medium">Type</th>
+                                  <th className="text-left py-2 px-3 font-medium">Status</th>
+                                  <th className="text-left py-2 px-3 font-medium">Chunks</th>
+                                  <th className="text-right py-2 px-3 font-medium">Query</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-zinc-800">
+                                {expandedSmFiles.map(f => (
+                                  <tr key={f.file_id} className="hover:bg-zinc-800/30">
+                                    <td className="py-2 px-3 text-zinc-500">{f.file_id}</td>
+                                    <td className="py-2 px-3 text-zinc-300 font-medium">{f.original_name}</td>
+                                    <td className="py-2 px-3 text-zinc-500">{f.file_type}</td>
+                                    <td className={`py-2 px-3 flex items-center gap-1.5 ${statusColor(f.status)}`}>
+                                      {statusIcon(f.status)}
+                                      <span className="capitalize">{f.status}</span>
+                                      {f.status === 'failed' && f.error && (
+                                        <span className="relative group">
+                                          <AlertTriangle className="w-3.5 h-3.5 text-red-400 cursor-help" />
+                                          <span className="absolute bottom-full left-0 mb-1 hidden group-hover:block bg-zinc-950 border border-zinc-700 text-xs text-red-300 px-2 py-1 rounded shadow-lg max-w-xs whitespace-pre-wrap z-10">
+                                            {f.error}
+                                          </span>
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className="py-2 px-3 text-zinc-500">{f.chunk_count}</td>
+                                    <td className="py-2 px-3 text-right">
+                                      {f.status === 'completed' && (
+                                        <button
+                                          onClick={() => { setQueryFileId(f.file_id); setQuerySmId(null); setQueryAnswer(''); setQuerySources([]); setQueryQuestion(''); }}
+                                          className="text-zinc-400 hover:text-white p-1 rounded hover:bg-zinc-700 transition-colors"
+                                          title="Query this File"
+                                        >
+                                          <Search className="w-3.5 h-3.5" />
+                                        </button>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>
@@ -237,26 +383,28 @@ export default function StudyMaterialsView() {
       </div>
 
       {/* ── Query Panel ── */}
-      {querySmId !== null && (
+      {(querySmId !== null || queryFileId !== null) && (
         <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-5">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-medium text-zinc-300 flex items-center gap-2">
               <Search className="w-4 h-4 text-[#f05a28]" />
-              Query: {materials.find(m => m.id === querySmId)?.name}
+              Query: {querySmId !== null 
+                ? materials.find(m => m.id === querySmId)?.name 
+                : expandedSmFiles.find(f => f.file_id === queryFileId)?.original_name || `File #${queryFileId}`}
             </h3>
-            <button onClick={() => setQuerySmId(null)} className="text-zinc-500 hover:text-white text-xs">Close</button>
+            <button onClick={() => { setQuerySmId(null); setQueryFileId(null); }} className="text-zinc-500 hover:text-white text-xs">Close</button>
           </div>
           <div className="flex gap-2">
             <input
               type="text"
-              placeholder="Ask a question about this study material..."
+              placeholder={querySmId !== null ? "Ask a question about this study material..." : "Ask a question about this file..."}
               value={queryQuestion}
               onChange={e => setQueryQuestion(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleQuery(querySmId)}
+              onKeyDown={e => e.key === 'Enter' && handleQuery()}
               className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-[#f05a28]"
             />
             <button
-              onClick={() => handleQuery(querySmId)}
+              onClick={handleQuery}
               disabled={querying || !queryQuestion.trim()}
               className="bg-[#f05a28] hover:bg-[#d4481c] disabled:bg-zinc-700 disabled:text-zinc-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
             >
@@ -270,6 +418,35 @@ export default function StudyMaterialsView() {
                 <p className="text-xs text-zinc-600 mt-2">
                   Sources: {querySources.length} chunks
                 </p>
+              )}
+              {retrievedSources.length > 0 && (
+                <div className="mt-3 border-t border-zinc-700 pt-2">
+                  <button
+                    onClick={() => setSourcesExpanded(!sourcesExpanded)}
+                    className="flex items-center gap-1 text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
+                  >
+                    {sourcesExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                    Retrieved Sources ({retrievedSources.length})
+                  </button>
+                  {sourcesExpanded && (
+                    <div className="mt-2 space-y-1.5">
+                      {retrievedSources.map((src, idx) => (
+                        <div key={idx} className="flex items-center gap-2 text-xs py-1 px-2 bg-zinc-900 rounded">
+                          <span className="font-medium text-zinc-200 truncate max-w-[200px]" title={src.source_file}>
+                            {src.source_file || 'Unknown'}
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded bg-zinc-700 text-zinc-400">
+                            {src.file_type || '?'}
+                          </span>
+                          <span className="text-zinc-500">score: {src.score?.toFixed(2)}</span>
+                          {src.page_number && <span className="text-zinc-500">p.{src.page_number}</span>}
+                          {src.function_name && <span className="text-zinc-500 font-mono">{src.function_name}()</span>}
+                          {src.header_context && <span className="text-zinc-500 italic truncate max-w-[150px]" title={src.header_context}>{src.header_context}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           )}

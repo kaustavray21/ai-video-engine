@@ -115,6 +115,11 @@ class StudyMaterialMerger:
             temp_path = tempfile.mkdtemp(dir=parent_dir, prefix='merged_vs_tmp_')
             try:
                 course_vs.save_local(temp_path)
+                
+                # Rebuild BM25 for the newly merged vectorstore so hybrid search works
+                from apps.core.services.study_material_processor import StudyMaterialProcessor
+                StudyMaterialProcessor._rebuild_bm25(course_vs, temp_path)
+
                 if os.path.exists(final_path):
                     shutil.rmtree(final_path)
                 os.rename(temp_path, final_path)

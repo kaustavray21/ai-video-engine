@@ -183,6 +183,16 @@ CELERY_TASK_SOFT_TIME_LIMIT = 1800   # 30 min: raises SoftTimeLimitExceeded
 CELERY_TASK_TIME_LIMIT      = 2400   # 40 min: hard SIGKILL
 
 # ---------------------------------------------------------------------------
+# RAG / Vectorstore Configuration
+# ---------------------------------------------------------------------------
+
+VECTORSTORE_TOP_K = int(os.environ.get('VECTORSTORE_TOP_K', 6))
+VECTORSTORE_SCORE_THRESHOLD = None   # Set to float (e.g. 0.3) to enforce minimum score
+QUERY_REWRITE_ENABLED = os.environ.get('QUERY_REWRITE_ENABLED', 'False').lower() in ('true', '1')
+SELF_QUERY_ROUTING_ENABLED = os.environ.get('SELF_QUERY_ROUTING_ENABLED', 'False').lower() in ('true', '1')
+IMAGE_VLM_ENABLED = os.environ.get('IMAGE_VLM_ENABLED', 'True').lower() in ('true', '1')
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 

@@ -1,0 +1,71 @@
+{
+  "status": "success",
+  "answer": "The provided context does not contain information about this topic.",
+  "study_material_id": 12,
+  "study_material_name": "test12",
+  "question": "what can you tell me about live video pipeline vulnerabilities ?",
+  "source_chunks": 6,
+  "retrieved_sources": [
+    {
+      "source_file": "netflix_data.csv",
+      "file_type": "spreadsheet",
+      "chunk_index": 117,
+      "chunk_role": "single",
+      "score": 1.9215,
+      "header_context": null,
+      "page_number": null,
+      "function_name": null
+    },
+    {
+      "source_file": "Module3-Security-Architecture-Engineering - sweta dargad.pdf",
+      "file_type": "document",
+      "chunk_index": 21,
+      "chunk_role": "child",
+      "score": 1.9064,
+      "header_context": null,
+      "page_number": 16,
+      "function_name": null
+    },
+    {
+      "source_file": "live_video_pipeline_vulnerabilities.svg",
+      "file_type": "image",
+      "chunk_index": 0,
+      "chunk_role": "single",
+      "score": 19.5593,
+      "header_context": null,
+      "page_number": null,
+      "function_name": null
+    },
+    {
+      "source_file": "netflix_data.csv",
+      "file_type": "spreadsheet",
+      "chunk_index": 103,
+      "chunk_role": "single",
+      "score": 1.9093,
+      "header_context": null,
+      "page_number": null,
+      "function_name": null
+    },
+    {
+      "source_file": "process_live_videos.py",
+      "file_type": "code",
+      "chunk_index": 3,
+      "chunk_role": "single",
+      "score": 6.8481,
+      "header_context": null,
+      "page_number": null,
+      "function_name": null
+    },
+    {
+      "source_file": "netflix_data.csv",
+      "file_type": "spreadsheet",
+      "chunk_index": 240,
+      "chunk_role": "single",
+      "score": 1.9104,
+      "header_context": null,
+      "page_number": null,
+      "function_name": null
+    }
+  ],
+  "retrieved_chunk_count": 6
+}

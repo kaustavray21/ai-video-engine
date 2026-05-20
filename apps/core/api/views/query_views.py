@@ -87,6 +87,8 @@ class VideoQueryAPI(APIView):
             'course_title': video.course.title,
             'question': question,
             'source_chunks': result.source_chunks,
+            'retrieved_sources': result.retrieved_sources,
+            'retrieved_chunk_count': result.retrieved_chunk_count,
         })
 
 
@@ -147,11 +149,13 @@ class CourseQueryAPI(APIView):
         from apps.core.services.vectorstore import VectorStoreManager
 
         manager = VectorStoreManager(openai_api_key=settings.OPENAI_API_KEY)
+        filter_source = request.data.get('filter_source_file', None)
         result = manager.query(
             vectorstore_path=vs_path,
             question=question,
             course_title=course.title,
             video_title=f'All videos in {course.title}',
+            filter_source_file=filter_source,
         )
 
         if not result.success:
@@ -168,4 +172,6 @@ class CourseQueryAPI(APIView):
             'question': question,
             'source_chunks': result.source_chunks,
             'vectorstore_used': vs_label,
+            'retrieved_sources': result.retrieved_sources,
+            'retrieved_chunk_count': result.retrieved_chunk_count,
         })

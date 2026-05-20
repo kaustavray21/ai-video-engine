@@ -1,12 +1,17 @@
-# Study Material Pipeline — Implementation Plan (Part 1: Architecture & Services)
+# Study Material Pipeline — Part 1: Architecture & Services
+> **Last updated:** 2026-05-19 — Reflects the fully working, production-tested implementation.
 
-## Key Observations from Logs
+---
 
-> [!IMPORTANT]
-> **Celery time limit exceeded** — `test3` hit the 40-min hard cap. Per-file individual vectorstores + `StudyMaterialFile` checkpointing directly solves this: progress is saved per-file, not all-or-nothing.
+## What Was Solved
 
-> [!WARNING]
-> **Packages not installed in venv** — `pdfplumber`, `openpyxl`, `python-pptx` missing. Run `pip install pdfplumber python-pptx openpyxl` in the venv before testing again.
+| Problem | Solution |
+|---|---|
+| Celery 40-min hard timeout on large zips | Per-file `StudyMaterialFile` checkpointing — retry skips completed files |
+| OpenAI `400 Bad Request` on oversized batches | `tiktoken` exact token counting + auto-split retry in `_embed_batch()` |
+| Token-per-minute rate limit exhaustion | `OpenAIRateLimiter` dual rolling-window (TPM + RPM) with lock-released sleeps |
+| 50k+ chunk files too large for one embedding call | `_embed_with_segmentation()` — splits into 50k-chunk segments, merges FAISS |
+| Log file growing unbounded | `_CustomTimedRotatingFileHandler` — daily rotation, 10-day backup, renamed files |
 
 ---
 
@@ -15,29 +20,30 @@
 ```
 media/
 ├── course_vectorstores/
-│   └── {course_id}_{course_slug}/                          ← original (NEVER touched)
+│   └── {course_id}_{course_slug}/                        ← ORIGINAL (never touched)
 │       ├── index.faiss
 │       ├── index.pkl
-│       └── {cid}_{cslug}_{smid}_{smslug}.vectorstore/     ← merged (delete+rebuild on SM replace)
+│       └── {cid}_{cslug}_{smid}_{smslug}.vectorstore/   ← MERGED (delete+rebuild on SM replace)
 │           ├── index.faiss
 │           └── index.pkl
 │
-├── study_materials/{sm_name}/
-│   └── text/{original_filename}.txt                    ← converted text (kept, raw files deleted)
+├── study_materials/{sm_slug}/
+│   └── text/{original_filename}.txt                      ← converted text (kept; raw files deleted)
 │
 └── study_materials_vectorstore/
     ├── complete_vectorstores/
-    │   └── {sm_id}_{sm_name}_vectorstore/              ← merged SM vectorstore (all files combined)
+    │   └── {sm_id}_{sm_slug}_vectorstore/                ← merged SM VS (all files combined)
     │       ├── index.faiss
     │       └── index.pkl
     └── individual_vectorstores/
-        └── {sm_id}_{original_filename}_vectorstore/    ← per-file vectorstore (one per file)
+        └── {sm_id}_{stem}_vectorstore/                   ← per-file VS (one per extracted file)
             ├── index.faiss
             └── index.pkl
 ```
 
 > [!NOTE]
-> Per-file vectorstores are prefixed with `{sm_id}_` to prevent filename collisions when two study materials contain files with the same name (e.g., both have `notes.pdf`).
+> `{sm_slug}` and `{stem}` are produced by `re.sub(r'[^a-zA-Z0-9]+', '_', text).strip('_')`.
+> Per-file vectorstores are prefixed with `{sm_id}_` to prevent collisions when two SMs share a filename.
 
 **Path examples (SM id=3, name="Week 1 Notes", Course id=5, "Python Bootcamp"):**
 - Text file: `study_materials/Week_1_Notes/text/notes.txt`
@@ -49,229 +55,381 @@ media/
 
 ## 1 — Data Models
 
-### [MODIFY] `apps/core/models/study_material.py`
+### `apps/core/models/study_material.py`
 
 ```python
 class StudyMaterial(models.Model):
-    STATUS = ['pending', 'processing', 'completed', 'failed']
+    STATUS_PENDING    = 'pending'
+    STATUS_PROCESSING = 'processing'
+    STATUS_COMPLETED  = 'completed'
+    STATUS_FAILED     = 'failed'
 
     name                 = models.CharField(max_length=255, unique=True)
     description          = models.TextField(blank=True, default='')
-    file_path            = models.CharField(max_length=500, blank=True)  # media/study_materials/{name}/
-    status               = models.CharField(max_length=20, default='pending')
-    files_count          = models.IntegerField(default=0)   # total discovered (non-skipped)
-    processed_files      = models.IntegerField(default=0)   # per-file VSs built so far
-    vectorstore_location = models.CharField(max_length=500, blank=True)  # full merged SM VS
+    file_path            = models.CharField(max_length=500, blank=True, default='')
+    status               = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    files_count          = models.IntegerField(default=0)
+    processed_files      = models.IntegerField(default=0)   # incremented atomically via F()
+    vectorstore_location = models.CharField(max_length=500, blank=True, default='')
+    # ^ relative path to complete_vectorstores/{sm_id}_{slug}_vectorstore/
+    error_log            = models.TextField(blank=True, default='')
     created_at           = models.DateTimeField(auto_now_add=True)
     attached_to_courses  = models.ManyToManyField('Course', blank=True)
-    error_log            = models.TextField(blank=True)     # last pipeline error
+
+    class Meta:
+        ordering = ['-created_at']
 ```
 
-### [NEW] `apps/core/models/study_material_file.py`
-
-Tracks every file discovered inside the uploaded zip:
+### `apps/core/models/study_material_file.py`
 
 ```python
 class StudyMaterialFile(models.Model):
-    STATUS = ['pending', 'processing', 'completed', 'failed', 'skipped']
+    STATUS_PENDING    = 'pending'
+    STATUS_PROCESSING = 'processing'
+    STATUS_COMPLETED  = 'completed'
+    STATUS_FAILED     = 'failed'
+    STATUS_SKIPPED    = 'skipped'
 
-    study_material   = models.ForeignKey(StudyMaterial, on_delete=models.CASCADE,
-                                         related_name='files')
-    original_name    = models.CharField(max_length=500)     # e.g. "notes.pdf"
-    relative_path    = models.CharField(max_length=1000)    # e.g. "lectures/week1/notes.pdf"
-    file_type        = models.CharField(max_length=20)      # e.g. ".pdf"
-    file_size        = models.BigIntegerField(default=0)    # bytes
-    text_path        = models.CharField(max_length=500, blank=True)  # .txt file path (relative)
-    vectorstore_path = models.CharField(max_length=500, blank=True)  # per-file VS path (relative)
+    study_material   = models.ForeignKey(StudyMaterial, on_delete=models.CASCADE, related_name='files')
+    original_name    = models.CharField(max_length=500)    # e.g. "notes.pdf"
+    relative_path    = models.CharField(max_length=1000)   # e.g. "lectures/week1/notes.pdf"
+    file_type        = models.CharField(max_length=20, blank=True, default='')  # e.g. ".pdf"
+    file_size        = models.BigIntegerField(default=0)
+    text_path        = models.CharField(max_length=500, blank=True, default='')  # relative .txt path
+    vectorstore_path = models.CharField(max_length=500, blank=True, default='')  # relative VS path
     chunk_count      = models.IntegerField(default=0)
-    status           = models.CharField(max_length=20, default='pending')
-    error            = models.TextField(blank=True)
+    status           = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    error            = models.TextField(blank=True, default='')
     created_at       = models.DateTimeField(auto_now_add=True)
     processed_at     = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['created_at']
+        indexes = [models.Index(fields=['study_material', 'status'])]
 ```
 
-### [MODIFY] `apps/core/models/course.py`
+### `apps/core/models/course.py` — Study-material fields
 
-Add three fields:
 ```python
+# Study material attachment
 study_material          = models.JSONField(null=True, blank=True)
 # e.g. {"id": 3, "name": "Week 1 Notes", "description": "..."}
 
 merged_vectorstore_path = models.CharField(max_length=500, blank=True, default='')
-# e.g. "course_vectorstores/5_Python_Bootcamp/5_Python_Bootcamp_3_Week_1_Notes.vectorstore"
+# relative: course_vectorstores/{cid}_{cslug}/{cid}_{cslug}_{smid}_{smslug}.vectorstore
 
 study_materials_history = models.JSONField(default=list, blank=True)
+# audit log of replaced SMs
 ```
-
-### [MODIFY] `apps/core/models/__init__.py`
-Export `StudyMaterial`, `StudyMaterialFile`.
-
-### [NEW] Migration
-Auto-generated for all model changes.
 
 ---
 
-## 2 — Recursive Extraction Service
+## 2 — Zip Extractor Service
 
-### [NEW] `apps/core/services/zip_extractor.py`
+### `apps/core/services/zip_extractor.py`
 
 ```python
-# Pipeline:
-# 1. Open zip at zip_path
-# 2. For each member:
-#    - If member is a .zip → extract to subdir, recurse
-#    - Otherwise → extract to dest_dir, yield FileEntry
-# 3. Returns flat list[FileEntry(abs_path, relative_path, ext, size)]
-# Sanitises paths: strips any "../" components
+@dataclass
+class FileEntry:
+    abs_path:      str
+    relative_path: str   # path inside zip (sanitised)
+    ext:           str   # lowercase extension e.g. ".pdf"
+    size:          int   # bytes
+
+class ZipExtractor:
+    def extract(self, zip_path: str, extract_dir: str) -> List[FileEntry]: ...
+    def _extract_recursive(self, zip_path, extract_dir, entries, prefix): ...
+    @staticmethod
+    def _sanitise(path: str) -> str | None: ...
 ```
 
-Logging:
-```
-[ZipExtractor] Extracting: my_upload.zip → media/study_materials/Week_1_Notes/
-[ZipExtractor] Found nested zip: resources.zip → recursing into resources/
-[ZipExtractor] Discovered 14 files total (2 nested zips expanded)
-```
+**Key behaviours:**
+- Nested `.zip` members are extracted recursively, deleted after recursion.
+- `_sanitise()` strips any `../` components (path traversal protection).
+- Returns a flat `List[FileEntry]` regardless of archive depth.
+- Directories (`member.endswith('/')`) are created but not yielded as entries.
 
 ---
 
 ## 3 — File Converter Service
 
-### [EXISTING/MODIFY] `apps/core/services/file_converter.py`
+### `apps/core/services/file_converter.py`
 
-Already partially implemented. Fix outstanding issues:
-- `pdfplumber` import guarded: `try: import pdfplumber except ImportError: pdfplumber = None`
-- Same guard for `pptx`, `openpyxl`, `docx`, `striprtf`, `odfpy`
-- Each converter logs at INFO on success, WARNING on failure/skip
+All library imports are inline (inside each `_convert_*` method) — no guarding at module level needed; `ImportError` surfaces as a `ConversionResult(success=False, error=...)`.
+
+```python
+@dataclass
+class ConversionResult:
+    success: bool
+    text:    str   = ''
+    error:   str   = ''
+    skipped: bool  = False
+```
 
 **Supported formats:**
 
-| Category | Extensions |
-|---|---|
-| Documents | `.pdf`, `.doc`, `.docx`, `.txt`, `.md`, `.rtf`, `.ppt`, `.pptx`, `.odp` |
-| Spreadsheets | `.xls`, `.xlsx`, `.csv`, `.ods` |
-| Code/Config | `.py`, `.js`, `.ts`, `.jsx`, `.tsx`, `.vue`, `.svelte`, `.html`, `.css`, `.scss`, `.sass`, `.java`, `.go`, `.rs`, `.cpp`, `.c`, `.h`, `.cs`, `.swift`, `.kt`, `.php`, `.rb`, `.dart`, `.json`, `.yaml`, `.yml`, `.toml`, `.xml`, `.env`, `.sh`, `.bash`, `.zsh`, `Dockerfile`, `.graphql`, `.sql` |
-| Images | `.jpg`, `.jpeg`, `.png` (OCR), `.svg` (XML text nodes) |
-| Skipped | `.mp4`, `.mp3`, `.mov`, `.avi`, `.zip` |
+| Category | Extensions | Library |
+|---|---|---|
+| PDF | `.pdf` | `pdfplumber` |
+| Word | `.docx`, `.doc` | `python-docx` |
+| PowerPoint | `.pptx`, `.ppt` | `python-pptx` |
+| Plain text / Markdown | `.txt`, `.md` | built-in |
+| RTF | `.rtf` | `striprtf` |
+| Excel | `.xlsx` | `openpyxl` (read_only=True, data_only=True) |
+| Excel legacy | `.xls` | `xlrd` |
+| CSV | `.csv` | built-in `csv` |
+| ODS | `.ods` | `odfpy` |
+| ODP | `.odp` | `odfpy` |
+| Code / Config | `.py .js .ts .jsx .tsx .vue .svelte .html .css .scss .sass .java .go .rs .cpp .c .h .cs .swift .kt .php .rb .dart .json .yaml .yml .toml .xml .env .sh .bash .zsh .dockerfile .makefile .mk .graphql .gql .sql` | built-in (UTF-8) |
+| Image OCR | `.jpg`, `.jpeg`, `.png` | `Pillow` + `pytesseract` (blank → placeholder) |
+| SVG | `.svg` | `lxml.etree` (text nodes only) |
+| **Skipped** | `.mp4 .mp3 .mov .avi .zip` | — `skipped=True` |
+| **Skipped** | anything else | — `skipped=True` |
 
-Returns `ConversionResult(success, text, error, skipped: bool)`.
-
-Logging:
+**Logging pattern:**
 ```
-[FileConverter] .pdf  → extracted 4,821 chars from notes.pdf
-[FileConverter] .xlsx → failed (openpyxl not installed), skipping
-[FileConverter] .jpg  → OCR returned blank, using placeholder
-```
-
----
-
-## 4 — Study Material Processor (Refactored)
-
-### [MODIFY] `apps/core/services/study_material_processor.py`
-
-**New pipeline — per-file vectorstore approach:**
-
-```
-PHASE 1 — DISCOVERY (fast, synchronous within task)
-  1. ZipExtractor.extract(zip_path, dest_dir) → list[FileEntry]
-  2. Create StudyMaterialFile record for every FileEntry
-  3. Update StudyMaterial: files_count=len(entries), status='processing'
-  4. Log: "[Processor] Discovered N files for SM '{name}'"
-
-PHASE 2 — PER-FILE PROCESSING (sequential queue)
-  For each StudyMaterialFile in status='pending':
-    a. Mark file status = 'processing'
-    b. FileConverter.convert(file_entry) → text
-    c. Save text → study_materials/{name}/text/{original_filename}.txt
-       Update file.text_path
-     d. vs_path = study_materials_vectorstore/individual_vectorstores/{sm_id}_{original_filename}_vectorstore/
-        Embedder.create_vectorstore(text, save_path=vs_path)
-    e. Update StudyMaterialFile:
-         vectorstore_path=vs_path, chunk_count, status='completed', processed_at=now()
-    f. StudyMaterial.processed_files += 1  (atomic update)
-    g. Log: "[Processor] [{i}/{N}] ✓ {filename} → {chunks} chunks"
-    On error:
-    h. StudyMaterialFile.status = 'failed', error = str(e)
-    i. Log WARNING: "[Processor] [{i}/{N}] ✗ {filename}: {error}"
-    j. Continue to next file (do not abort pipeline)
-
-PHASE 3 — MERGE INTO FULL SM VECTORSTORE
-  1. Load all completed StudyMaterialFile vectorstores
-  2. FAISS.merge_from() iteratively → combined index
-   3. Save → study_materials_vectorstore/complete_vectorstores/{sm_id}_{sm_name}_vectorstore/
-  4. Update StudyMaterial: vectorstore_location, status='completed'
-  5. Log: "[Processor] Merged {M}/{N} file vectorstores → full SM vectorstore"
-
-PHASE 4 — CLEANUP
-  1. Delete original zip
-  2. Delete raw extracted files (keep text/ folder in study_materials/{name}/)
-  3. Log: "[Processor] Cleanup complete"
+INFO  [FileConverter] .pdf  → extracted 4,821 chars from notes.pdf
+INFO  [FileConverter] .xlsx → skipped
+WARN  [FileConverter] .docx → failed for report.docx: <error>
 ```
 
 ---
 
-## 5 — Study Material Merger Service
+## 4 — Embedder Service
 
-### [NEW] `apps/core/services/study_material_merger.py`
+### `apps/core/services/embedder.py`
+
+**Model:** `text-embedding-3-small`
+
+**Tuning constants (current working values):**
 
 ```python
-class StudyMaterialMerger:
-
-    @staticmethod
-    def _slug(text: str) -> str:
-        return re.sub(r'[^a-zA-Z0-9]+', '_', text).strip('_')
-
-    @staticmethod
-    def get_merged_vs_path(course, sm) -> str:
-        cslug = StudyMaterialMerger._slug(course.title)
-        sslug = StudyMaterialMerger._slug(sm.name)
-        folder = f'{course.id}_{cslug}_{sm.id}_{sslug}.vectorstore'
-        return os.path.join(settings.MEDIA_ROOT, 'course_vectorstores',
-                            f'{course.id}_{cslug}', folder)
-
-    @staticmethod
-    def get_merged_vs_relative(course, sm) -> str:
-        cslug = StudyMaterialMerger._slug(course.title)
-        sslug = StudyMaterialMerger._slug(sm.name)
-        folder = f'{course.id}_{cslug}_{sm.id}_{sslug}.vectorstore'
-        return os.path.join('course_vectorstores', f'{course.id}_{cslug}', folder)
-
-    def build(self, course, sm) -> MergeResult:
-        # 1. Load course.vectorstore_path (original, video-only)
-        # 2. Load sm.vectorstore_location (full SM merged vectorstore)
-        # 3. FAISS.merge_from()
-        # 4. Atomic save (temp → rename) to get_merged_vs_path()
-        # 5. Return MergeResult(success, merged_path, merged_relative)
-
-    def replace(self, course, sm) -> MergeResult:
-        # 1. shutil.rmtree(abs(course.merged_vectorstore_path))
-        # 2. self.build(course, sm)
+EMBED_MODEL           = "text-embedding-3-small"
+MAX_BATCH_INPUTS      = 2048       # OpenAI hard cap on array length
+MAX_TOKENS_PER_BATCH  = 280_000    # stay safely under OpenAI's 300k per-request cap
+BATCH_DELAY           = 0.5        # seconds between sequential batches
+MAX_RETRIES           = 5          # 429 retry attempts
+RETRY_BASE_DELAY      = 15         # seconds for first retry; doubles each attempt
+TPM_LIMIT             = 980_000    # 98% of Tier 1 1M TPM
+RPM_LIMIT             = 2_800      # 93% of Tier 1 3,000 RPM
 ```
 
-Logging:
+**`OpenAIRateLimiter` — dual rolling-window (TPM + RPM):**
+- Two logs: `_token_log: List[(ts, count)]` for TPM, `_req_log: List[ts]` for RPM.
+- `asyncio.Lock` is **released before every `asyncio.sleep()`** — no convoy effect.
+- Each waiter independently re-checks budget after waking.
+
+**`Embedder.create_vectorstore(transcript_text, save_path, metadata=None) → EmbedResult`:**
+1. `text_splitter.split_text(text)` → `chunks`
+2. `asyncio.run(_embed_all(chunks))` → `vectors` (list of float lists)
+3. `FAISS.from_embeddings(text_embedding_pairs, embedding=self.embeddings, metadatas=...)`
+4. `vectorstore.save_local(save_path)`
+
+**`_plan_batches(chunks)` — tiktoken exact counting:**
+```python
+# Uses enc.encode_batch(chunks, disallowed_special=()) — parallel Rust path, < 100ms for 50k chunks
+# Builds batches keeping both MAX_BATCH_INPUTS and MAX_TOKENS_PER_BATCH constraints
 ```
-[Merger] Building merged VS: "Python Bootcamp" + "Week 1 Notes"
-[Merger] Loaded course VS: 18,432 vectors
-[Merger] Loaded SM VS: 3,201 vectors
-[Merger] Merged → 21,633 vectors total
-[Merger] Saved → course_vectorstores/5_Python_Bootcamp/5_Python_Bootcamp_3_Week_1_Notes.vectorstore/
+
+**`_embed_batch()` — retry & auto-split:**
+- `429` → exponential backoff (`RETRY_BASE_DELAY * 2^(attempt-1)`)
+- `400` with `'maximum request size'` or `'max_tokens_per_request'` → split batch in half, recurse
+
+**`EmbedResult` dataclass:**
+```python
+@dataclass
+class EmbedResult:
+    success:          bool
+    vectorstore_path: str = ''
+    chunk_count:      int = 0
+    error:            str = ''
+```
+
+**`Embedder` constructor params (working defaults):**
+```python
+Embedder(
+    openai_api_key = settings.OPENAI_API_KEY,
+    chunk_size     = 1000,
+    chunk_overlap  = 200,
+)
+# text_splitter separators: ['\n\n', '\n', '. ', ' ', '']
 ```
 
 ---
 
-## File Map (Part 1 scope)
+## 5 — Study Material Processor
+
+### `apps/core/services/study_material_processor.py`
+
+**Segmentation constant:**
+```python
+MAX_CHUNKS_PER_SEGMENT = 50_000
+# Files producing more chunks than this are split into segments, each embedded
+# separately, then merged via FAISS.merge_from().
+```
+
+**Entry point:**
+```python
+class StudyMaterialProcessor:
+    def __init__(self, openai_api_key: str = ''):
+        # Falls back to settings.OPENAI_API_KEY
+        self.extractor = ZipExtractor()
+        self.converter = FileConverter()
+        self.embedder  = Embedder(openai_api_key=self.openai_api_key)
+
+    def run(self, study_material: StudyMaterial) -> ProcessResult: ...
+```
+
+**4-phase pipeline:**
+
+```
+PHASE 1 — DISCOVERY  (only if sm.status == 'pending')
+  ZipExtractor.extract(zip_path, raw_dir)  →  List[FileEntry]
+  StudyMaterialFile.objects.bulk_create(smf_objects)   ← atomic transaction
+  SM: files_count=N, processed_files=0, status='processing'
+  Logging: "[Processor] Discovered N files → N StudyMaterialFile records created"
+
+PHASE 2 — PER-FILE  (resumable — only processes status IN ('pending','failed'))
+  For each SMF ordered by created_at:
+    a. smf.status = 'processing'
+    b. FileConverter.convert(FileEntry) → ConversionResult
+    c. If conv.skipped  → smf.status='skipped'; continue
+    d. If not conv.success → raise ValueError(conv.error)
+    e. Write text → study_materials/{slug}/text/{stem}.txt
+       (counter suffix added if name collision: {stem}_1.txt, {stem}_2.txt, …)
+    f. _embed_with_segmentation(text, vs_path, metadata) → EmbedResult
+    g. smf: text_path, vectorstore_path, chunk_count, status='completed', processed_at
+    h. SM: processed_files += 1  (atomic F() update)
+    On SoftTimeLimitExceeded → re-raise (let Celery task handle checkpointing)
+    On other exception → smf.status='failed', log WARNING, continue
+
+PHASE 3 — MERGE  (all completed SMFs with vectorstore_path set)
+  Iteratively FAISS.merge_from() per-file VSs
+  Atomic save: write to {vs_path}.tmp → rename to final path (overwrites old if exists)
+  Save → study_materials_vectorstore/complete_vectorstores/{sm_id}_{slug}_vectorstore/
+  SM: status='completed', vectorstore_location=vs_relative
+
+PHASE 4 — CLEANUP
+  Delete original zip (sm.file_path)
+  Delete each raw extracted file (smf.relative_path inside raw_dir)
+  os.walk raw_dir bottom-up: rmdir empty subdirs (text/ dir is preserved)
+```
+
+**`_embed_with_segmentation(text, save_path, metadata)` — large-file handling:**
+```python
+chunks = embedder.text_splitter.split_text(text)
+if len(chunks) <= MAX_CHUNKS_PER_SEGMENT:
+    return embedder.create_vectorstore(text, save_path, metadata)
+
+# Large: iterate segments of MAX_CHUNKS_PER_SEGMENT chunks
+for seg_start in range(0, total, MAX_CHUNKS_PER_SEGMENT):
+    seg_text = '\n\n'.join(chunks[seg_start:seg_start+MAX_CHUNKS_PER_SEGMENT])
+    result = embedder.create_vectorstore(seg_text, seg_path, metadata)
+    vs = FAISS.load_local(seg_path, embeddings, allow_dangerous_deserialization=True)
+    merged_vs.merge_from(vs)
+    shutil.rmtree(seg_path)   # clean up segment
+
+merged_vs.save_local(save_path)
+```
+
+**`ProcessResult` dataclass:**
+```python
+@dataclass
+class ProcessResult:
+    success:              bool
+    study_material_id:    int = 0
+    files_count:          int = 0
+    processed_files:      int = 0
+    vectorstore_location: str = ''
+    error:                str = ''
+```
+
+---
+
+## 6 — Study Material Merger
+
+### `apps/core/services/study_material_merger.py`
+
+```python
+@dataclass
+class MergeResult:
+    success:         bool
+    merged_path:     str = ''    # absolute
+    merged_relative: str = ''    # relative to MEDIA_ROOT
+    error:           str = ''
+
+class StudyMaterialMerger:
+    def __init__(self, openai_api_key: str = ''):
+        self.embeddings = OpenAIEmbeddings(openai_api_key=...)
+
+    @staticmethod
+    def _slugify(text) -> str:
+        return re.sub(r'[^a-zA-Z0-9]+', '_', text).strip('_')
+
+    # Path helpers
+    @staticmethod
+    def get_merged_vs_path(course, sm) -> str:       # absolute
+    @staticmethod
+    def get_merged_vs_relative(course, sm) -> str:   # relative to MEDIA_ROOT
+    @staticmethod
+    def get_course_vs_abs(course) -> str:            # handles both abs + relative stored paths
+
+    def build(self, course, sm) -> MergeResult:
+        # 1. FAISS.load_local(course_vs_path)
+        # 2. FAISS.load_local(sm.vectorstore_location)
+        # 3. course_vs.merge_from(sm_vs)
+        # 4. Atomic save: tempfile.mkdtemp() → save_local(temp) → rename(temp, final_path)
+        # 5. Return MergeResult
+
+    def replace(self, course, sm) -> MergeResult:
+        # shutil.rmtree(course.merged_vectorstore_path) if exists
+        # self.build(course, sm)
+```
+
+> [!IMPORTANT]
+> The original `course.vectorstore_path` (video-only index) is **never modified**.
+> The merged vectorstore is saved as a sibling folder inside `course_vectorstores/{cid}_{cslug}/`.
+
+**Folder naming:**
+```
+course_vectorstores/
+└── {course.id}_{course_slug}/
+    ├── index.faiss                                          ← original (video-only), untouched
+    ├── index.pkl
+    └── {cid}_{cslug}_{smid}_{smslug}.vectorstore/          ← merged (course + SM)
+        ├── index.faiss
+        └── index.pkl
+```
+
+---
+
+## File Map
 
 ```
 apps/core/
 ├── models/
-│   ├── study_material.py           [MODIFY — add processed_files, error_log]
-│   ├── study_material_file.py      [NEW — per-file tracking model]
-│   ├── course.py                   [MODIFY — study_material, merged_vectorstore_path, history]
-│   └── __init__.py                 [MODIFY — export StudyMaterialFile]
-├── migrations/
-│   └── 0XXX_study_material_v2.py   [NEW]
+│   ├── study_material.py          STATUS constants + 6 fields + attached_to_courses M2M
+│   ├── study_material_file.py     5 STATUS constants + 10 fields + composite index
+│   ├── course.py                  study_material (JSON), merged_vectorstore_path, study_materials_history
+│   └── __init__.py                exports StudyMaterial, StudyMaterialFile, Course, Video, Job, ApiLog
 └── services/
-    ├── zip_extractor.py             [NEW — recursive unzip]
-    ├── file_converter.py            [MODIFY — guard imports, add logging]
-    ├── study_material_processor.py  [MODIFY — per-file VS pipeline]
-    └── study_material_merger.py     [NEW — course+SM merge]
+    ├── zip_extractor.py           FileEntry dataclass + ZipExtractor (recursive, path-sanitised)
+    ├── file_converter.py          ConversionResult + FileConverter (30+ formats, inline imports)
+    ├── embedder.py                OpenAIRateLimiter + Embedder (tiktoken, async batching, auto-split)
+    ├── study_material_processor.py  StudyMaterialProcessor (4-phase, segmentation, resumable)
+    └── study_material_merger.py   StudyMaterialMerger (build / replace, atomic save)
 ```
+
+---
+
+## Required pip Packages
+
+```bash
+pip install pdfplumber python-pptx openpyxl xlrd python-docx striprtf odfpy \
+            Pillow pytesseract lxml tiktoken aiohttp \
+            langchain langchain-community langchain-openai faiss-cpu
+```
+
+> [!WARNING]
+> `pytesseract` requires the system `tesseract-ocr` binary: `sudo apt install tesseract-ocr`
+> Without it, image files produce a placeholder `[Image: filename.jpg]` rather than erroring.

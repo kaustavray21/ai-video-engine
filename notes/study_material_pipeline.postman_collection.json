@@ -1,13 +1,38 @@
 {
 	"info": {
 		"_postman_id": "c1a2b3c4-d5e6-4f7g-8h9i-j0k1l2m3n4o5",
-		"name": "AI Video Engine - Study Material Pipeline",
-		"description": "Collection for testing the fault-tolerant Study Material processing pipeline.",
+		"name": "AI Video Engine — Study Material Pipeline",
+		"description": "Complete collection for the Study Material lifecycle: upload → process → query → merge → delete.",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8000",
+			"type": "string"
+		},
+		{
+			"key": "sm_id",
+			"value": "12",
+			"type": "string",
+			"description": "StudyMaterial primary key"
+		},
+		{
+			"key": "file_id",
+			"value": "1",
+			"type": "string",
+			"description": "StudyMaterialFile primary key"
+		},
+		{
+			"key": "course_id",
+			"value": "5",
+			"type": "string",
+			"description": "Course primary key"
+		}
+	],
 	"item": [
 		{
-			"name": "Study Materials",
+			"name": "① Study Material CRUD",
 			"item": [
 				{
 					"name": "Upload Study Material",
@@ -19,54 +44,43 @@
 							"formdata": [
 								{
 									"key": "name",
-									"value": "Week 1 Data Science",
-									"type": "text"
+									"value": "test12",
+									"type": "text",
+									"description": "Unique name for this study material"
 								},
 								{
 									"key": "description",
-									"value": "Notes and exercises for week 1",
+									"value": "Security architecture notes and vulnerability diagrams",
 									"type": "text"
 								},
 								{
 									"key": "zip_file",
 									"type": "file",
-									"src": ""
+									"src": "",
+									"description": "ZIP archive containing all study material files"
 								}
 							]
 						},
 						"url": {
 							"raw": "{{base_url}}/api/study-materials/upload/",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"study-materials",
-								"upload",
-								""
-							]
+							"host": ["{{base_url}}"],
+							"path": ["api", "study-materials", "upload", ""]
 						},
-						"description": "Upload a ZIP file containing study materials. Dispatches a Celery task for processing."
+						"description": "Upload a ZIP file. Creates a StudyMaterial record (status: pending) and dispatches the Celery processing task."
 					},
 					"response": []
 				},
 				{
-					"name": "List Study Materials",
+					"name": "List All Study Materials",
 					"request": {
 						"method": "GET",
 						"header": [],
 						"url": {
 							"raw": "{{base_url}}/api/study-materials/",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"study-materials",
-								""
-							]
+							"host": ["{{base_url}}"],
+							"path": ["api", "study-materials", ""]
 						},
-						"description": "Get a list of all uploaded study materials and their current status."
+						"description": "Returns all StudyMaterial records with their current status."
 					},
 					"response": []
 				},
@@ -76,25 +90,11 @@
 						"method": "GET",
 						"header": [],
 						"url": {
-							"raw": "{{base_url}}/api/study-materials/:id/status/",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"study-materials",
-								":id",
-								"status",
-								""
-							],
-							"variable": [
-								{
-									"key": "id",
-									"value": "1"
-								}
-							]
+							"raw": "{{base_url}}/api/study-materials/{{sm_id}}/status/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "study-materials", "{{sm_id}}", "status", ""]
 						},
-						"description": "Get detailed status of a specific study material, including file processing summary."
+						"description": "Detailed status of a specific SM, including per-file processing results (status, chunk_count, errors)."
 					},
 					"response": []
 				},
@@ -104,30 +104,68 @@
 						"method": "GET",
 						"header": [],
 						"url": {
-							"raw": "{{base_url}}/api/study-materials/:id/files/",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"study-materials",
-								":id",
-								"files",
-								""
-							],
-							"variable": [
-								{
-									"key": "id",
-									"value": "1"
-								}
-							]
+							"raw": "{{base_url}}/api/study-materials/{{sm_id}}/files/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "study-materials", "{{sm_id}}", "files", ""]
 						},
-						"description": "List all individual files extracted from the ZIP and their processing status/vectorstore paths."
+						"description": "Lists all extracted StudyMaterialFile records with their status, vectorstore path, and chunk count."
 					},
 					"response": []
 				},
 				{
-					"name": "Query Study Material (RAG)",
+					"name": "Retry Failed Study Material",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/study-materials/{{sm_id}}/retry/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "study-materials", "{{sm_id}}", "retry", ""]
+						},
+						"description": "Re-queues a failed SM. Phase 2 automatically skips files already marked completed — resumes from last checkpoint."
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Study Material",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/study-materials/{{sm_id}}/delete/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "study-materials", "{{sm_id}}", "delete", ""]
+						},
+						"description": "Permanently deletes a SM and all resources (zip, raw files, per-file vectorstores, merged vectorstore, DB records). BLOCKED if attached to any course."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "② Merge to Course",
+			"item": [
+				{
+					"name": "Merge SM into Course",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/study-materials/{{sm_id}}/merge-to-course/{{course_id}}/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "study-materials", "{{sm_id}}", "merge-to-course", "{{course_id}}", ""]
+						},
+						"description": "Merges the SM complete vectorstore into the course vectorstore. Creates a new merged FAISS index + BM25 at course_vectorstores/. If the course already has an SM attached, the old merged VS is replaced and logged to study_materials_history."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "③ RAG Queries",
+			"item": [
+				{
+					"name": "Query Full Study Material",
 					"request": {
 						"method": "POST",
 						"header": [
@@ -138,123 +176,156 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"question\": \"What are the main topics in these notes?\"\n}"
+							"raw": "{\n    \"question\": \"what can you tell me about live video pipeline vulnerabilities ?\"\n}"
 						},
 						"url": {
-							"raw": "{{base_url}}/api/study-materials/:id/query/",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"study-materials",
-								":id",
-								"query",
-								""
-							],
-							"variable": [
-								{
-									"key": "id",
-									"value": "1"
-								}
-							]
+							"raw": "{{base_url}}/api/study-materials/{{sm_id}}/query/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "study-materials", "{{sm_id}}", "query", ""]
 						},
-						"description": "Ask a question against the merged vectorstore of the study material."
+						"description": "Hybrid BM25+FAISS RAG query against the merged complete vectorstore of the study material. Returns answer + retrieved_sources ordered by BM25 score."
 					},
 					"response": []
 				},
 				{
-					"name": "Retry Processing",
+					"name": "Query Full Study Material (Filtered by File Type)",
 					"request": {
 						"method": "POST",
-						"header": [],
-						"url": {
-							"raw": "{{base_url}}/api/study-materials/:id/retry/",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"study-materials",
-								":id",
-								"retry",
-								""
-							],
-							"variable": [
-								{
-									"key": "id",
-									"value": "1"
-								}
-							]
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"show me all the code examples\",\n    \"filter_file_type\": \"code\"\n}"
 						},
-						"description": "Resume processing for a failed study material. Skips already completed files."
+						"url": {
+							"raw": "{{base_url}}/api/study-materials/{{sm_id}}/query/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "study-materials", "{{sm_id}}", "query", ""]
+						},
+						"description": "Same as above but restricts retrieval to a specific file_type. Supported values: code, document, spreadsheet, image, presentation."
 					},
 					"response": []
 				},
 				{
-					"name": "Merge to Course",
+					"name": "Query Full Study Material (Filtered by Source File)",
 					"request": {
 						"method": "POST",
-						"header": [],
-						"url": {
-							"raw": "{{base_url}}/api/study-materials/:id/merge-to-course/:course_id/",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"study-materials",
-								":id",
-								"merge-to-course",
-								":course_id",
-								""
-							],
-							"variable": [
-								{
-									"key": "id",
-									"value": "1"
-								},
-								{
-									"key": "course_id",
-									"value": "5"
-								}
-							]
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"summarise this file\",\n    \"filter_source_file\": \"live_video_pipeline_vulnerabilities.svg\"\n}"
 						},
-						"description": "Merges the study material vectorstore into the course vectorstore. Atomic and isolated."
+						"url": {
+							"raw": "{{base_url}}/api/study-materials/{{sm_id}}/query/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "study-materials", "{{sm_id}}", "query", ""]
+						},
+						"description": "Restricts retrieval to a single named source file within the merged vectorstore."
+					},
+					"response": []
+				},
+				{
+					"name": "Query Overview (all files/topics)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"what are the topics covered in this study material?\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/study-materials/{{sm_id}}/query/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "study-materials", "{{sm_id}}", "query", ""]
+						},
+						"description": "Triggers the overview strategy: k is boosted, 1 chunk per file is guaranteed, and the file manifest is injected into the prompt so the LLM can enumerate all files."
+					},
+					"response": []
+				},
+				{
+					"name": "Query Single File (RAG)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"what vulnerabilities are described here?\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/study-materials/files/{{file_id}}/query/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "study-materials", "files", "{{file_id}}", "query", ""]
+						},
+						"description": "RAG query scoped to a single StudyMaterialFile's isolated per-file vectorstore. Useful for deep extraction from one document without noise from others."
+					},
+					"response": []
+				},
+				{
+					"name": "Course Query (with Study Material)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"course_id\": 5,\n    \"video_id\": 1,\n    \"question\": \"Explain neural networks based on lectures and study notes.\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/query/course/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "query", "course", ""]
+						},
+						"description": "RAG query against the merged course vectorstore (video transcripts + study material chunks). Requires the SM to be merged into the course first."
+					},
+					"response": []
+				},
+				{
+					"name": "Video Query (transcript only)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"video_id\": 1,\n    \"question\": \"What did the lecturer say about authentication?\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/query/video/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "query", "video", ""]
+						},
+						"description": "RAG query scoped to a single video's transcript vectorstore only (no study material)."
 					},
 					"response": []
 				}
 			]
-		},
-		{
-			"name": "Course Query",
-			"request": {
-				"method": "POST",
-				"header": [
-					{
-						"key": "Content-Type",
-						"value": "application/json"
-					}
-				],
-				"body": {
-					"mode": "raw",
-					"raw": "{\n    \"course_id\": 5,\n    \"question\": \"Explain the concept of neural networks based on the lecture and notes.\",\n    \"include_study_materials\": true\n}"
-				},
-				"url": {
-					"raw": "{{base_url}}/api/query/course/",
-					"host": [
-						"{{base_url}}"
-					],
-					"path": [
-						"api",
-						"query",
-						"course",
-						""
-					]
-				},
-				"description": "Perform RAG query against a course, optionally including the merged study materials."
-			},
-			"response": []
 		}
 	],
 	"event": [
@@ -262,26 +333,15 @@
 			"listen": "prerequest",
 			"script": {
 				"type": "text/javascript",
-				"exec": [
-					""
-				]
+				"exec": [""]
 			}
 		},
 		{
 			"listen": "test",
 			"script": {
 				"type": "text/javascript",
-				"exec": [
-					""
-				]
+				"exec": [""]
 			}
-		}
-	],
-	"variable": [
-		{
-			"key": "base_url",
-			"value": "http://localhost:8000",
-			"type": "string"
 		}
 	]
 }

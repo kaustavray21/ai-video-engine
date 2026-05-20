@@ -35,6 +35,7 @@ from apps.core.api.views.study_material_views import (
     StudyMaterialUploadAPI, StudyMaterialStatusAPI, StudyMaterialListAPI,
     StudyMaterialMergeAPI, StudyMaterialQueryAPI,
     StudyMaterialFilesAPI, StudyMaterialRetryAPI,
+    StudyMaterialFileQueryAPI, StudyMaterialDeleteAPI,
 )
 
 urlpatterns = [
@@ -63,7 +64,9 @@ urlpatterns = [
     path('study-materials/<int:pk>/files/', StudyMaterialFilesAPI.as_view(), name='study_material_files'),
     path('study-materials/<int:pk>/query/', StudyMaterialQueryAPI.as_view(), name='study_material_query'),
     path('study-materials/<int:pk>/retry/', StudyMaterialRetryAPI.as_view(), name='study_material_retry'),
+    path('study-materials/<int:pk>/delete/', StudyMaterialDeleteAPI.as_view(), name='study_material_delete'),
     path('study-materials/<int:pk>/merge-to-course/<int:course_id>/', StudyMaterialMergeAPI.as_view(), name='study_material_merge'),
+    path('study-materials/files/<int:file_id>/query/', StudyMaterialFileQueryAPI.as_view(), name='study_material_file_query'),
 
     # ── Dashboard ──
     path('dashboard/log/', DashboardLogAPI.as_view(), name='dashboard_log'),

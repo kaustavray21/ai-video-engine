@@ -14,11 +14,11 @@ Upload a `.zip` archive of study files. Dispatches async Celery task for recursi
 
 **Request** (multipart/form-data):
 
-| Field       | Type   | Required | Description            |
-| ----------- | ------ | -------- | ---------------------- |
-| `name`      | string | yes      | Unique name / slug     |
-| `description` | string | no    | Optional description   |
-| `zip_file`  | file   | yes      | `.zip` archive of files |
+| Field        | Type   | Required | Description            |
+| ------------ | ------ | -------- | ---------------------- |
+| `name`       | string | yes      | Unique name / slug     |
+| `description`| string | no       | Optional description   |
+| `zip_file`   | file   | yes      | `.zip` archive of files |
 
 **Response** `201 Created`:
 
@@ -26,36 +26,9 @@ Upload a `.zip` archive of study files. Dispatches async Celery task for recursi
 {
   "id": 1,
   "name": "Week 1 Notes",
-  "status": "processing"
+  "status": "pending"
 }
 ```
-
----
-
-## Get Study Material Status
-
-```
-GET /api/study-materials/<id>/status/
-```
-
-Poll processing status and all metadata fields.
-
-**Response** `200 OK`:
-
-```json
-{
-  "id": 1,
-  "name": "Week 1 Notes",
-  "description": "...",
-  "status": "completed",
-  "files_count": 12,
-  "vectorstore_location": "study_materials_vectorstore/complete_vectorstores/1_Week_1_Notes_vectorstore/",
-  "attached_courses_count": 1,
-  "created_at": "2025-01-15T10:30:00Z"
-}
-```
-
-Possible statuses: `pending | processing | completed | failed`
 
 ---
 
@@ -65,7 +38,7 @@ Possible statuses: `pending | processing | completed | failed`
 GET /api/study-materials/
 ```
 
-List all study materials with attached course count.
+List all study materials with attached course count and file status summary.
 
 **Response** `200 OK`:
 
@@ -75,13 +48,114 @@ List all study materials with attached course count.
     "id": 1,
     "name": "Week 1 Notes",
     "description": "...",
+    "file_path": "study_materials/Week_1_Notes/",
     "status": "completed",
     "files_count": 12,
+    "processed_files": 12,
     "vectorstore_location": "study_materials_vectorstore/complete_vectorstores/1_Week_1_Notes_vectorstore/",
+    "error_log": "",
     "attached_courses_count": 1,
+    "file_summary": {
+      "completed": 10,
+      "pending": 0,
+      "processing": 0,
+      "failed": 1,
+      "skipped": 1
+    },
     "created_at": "2025-01-15T10:30:00Z"
   }
 ]
+```
+
+Possible statuses: `pending | processing | completed | failed`
+
+---
+
+## Get Study Material Status
+
+```
+GET /api/study-materials/<id>/status/
+```
+
+Poll processing status, all metadata fields, and per-file details.
+
+**Response** `200 OK`:
+
+```json
+{
+  "id": 1,
+  "name": "Week 1 Notes",
+  "description": "...",
+  "file_path": "study_materials/Week_1_Notes/",
+  "status": "completed",
+  "files_count": 12,
+  "processed_files": 12,
+  "vectorstore_location": "study_materials_vectorstore/complete_vectorstores/1_Week_1_Notes_vectorstore/",
+  "error_log": "",
+  "attached_courses_count": 1,
+  "file_summary": {
+    "completed": 10,
+    "pending": 0,
+    "processing": 0,
+    "failed": 1,
+    "skipped": 1
+  },
+  "created_at": "2025-01-15T10:30:00Z",
+  "files": [
+    {
+      "file_id": 1,
+      "original_name": "intro.pdf",
+      "file_type": ".pdf",
+      "status": "completed",
+      "chunk_count": 42,
+      "error": ""
+    },
+    {
+      "file_id": 2,
+      "original_name": "hw1.py",
+      "file_type": ".py",
+      "status": "failed",
+      "chunk_count": 0,
+      "error": "Unsupported file encoding"
+    }
+  ]
+}
+```
+
+---
+
+## List Study Material Files
+
+```
+GET /api/study-materials/<id>/files/
+```
+
+List all individual files within a study material with full metadata.
+
+**Response** `200 OK`:
+
+```json
+{
+  "study_material_id": 1,
+  "study_material_name": "Week 1 Notes",
+  "total_files": 12,
+  "files": [
+    {
+      "id": 1,
+      "original_name": "intro.pdf",
+      "relative_path": "lectures/week1/intro.pdf",
+      "file_type": ".pdf",
+      "file_size": 1024000,
+      "text_path": "study_materials/Week_1_Notes/text/intro.txt",
+      "vectorstore_path": "study_materials_vectorstore/individual_vectorstores/1_intro_vectorstore/",
+      "chunk_count": 42,
+      "status": "completed",
+      "error": "",
+      "created_at": "2025-01-15T10:30:00Z",
+      "processed_at": "2025-01-15T10:31:00Z"
+    }
+  ]
+}
 ```
 
 ---
@@ -98,7 +172,61 @@ RAG query against the standalone study material vectorstore (no course context).
 
 ```json
 {
-  "question": "What is covered in week 1?"
+  "question": "What is covered in week 1?",
+  "filter_source_file": "lectures/week1/intro.pdf",
+  "filter_file_type": ".pdf"
+}
+```
+
+| Field               | Type   | Required | Description |
+| ------------------- | ------ | -------- | ----------- |
+| `question`           | string | yes      | Max 2000 chars |
+| `filter_source_file` | string | no       | Filter by relative source path |
+| `filter_file_type`   | string | no       | Filter by file extension (e.g. `.pdf`) |
+
+**Response** `200 OK`:
+
+```json
+{
+  "status": "success",
+  "answer": "Week 1 covers Python fundamentals including variables, loops, and functions.",
+  "study_material_id": 1,
+  "study_material_name": "Week 1 Notes",
+  "question": "What is covered in week 1?",
+  "source_chunks": [
+    {
+      "original_name": "lectures/week1/intro.pdf",
+      "type": ".pdf",
+      "chunk_index": 0,
+      "score": 0.92
+    },
+    {
+      "original_name": "exercises/hw1.py",
+      "type": ".py",
+      "chunk_index": 2,
+      "score": 0.78
+    }
+  ],
+  "retrieved_sources": 2,
+  "retrieved_chunk_count": 2
+}
+```
+
+---
+
+## Query Study Material File
+
+```
+POST /api/study-materials/files/<file_id>/query/
+```
+
+RAG query against a single file's vectorstore within a study material.
+
+**Request** (JSON):
+
+```json
+{
+  "question": "What is the time complexity of this algorithm?"
 }
 ```
 
@@ -106,19 +234,41 @@ RAG query against the standalone study material vectorstore (no course context).
 
 ```json
 {
-  "answer": "Week 1 covers Python fundamentals including variables, loops, and functions.",
-  "sources": [
-    {
-      "original_name": "lectures/week1/intro.pdf",
-      "type": "pdf",
-      "chunk_index": 0
-    },
-    {
-      "original_name": "exercises/hw1.py",
-      "type": "py",
-      "chunk_index": 2
-    }
-  ]
+  "status": "success",
+  "answer": "The algorithm has O(n log n) time complexity.",
+  "file_id": 1,
+  "file_name": "intro.pdf",
+  "file_type": ".pdf",
+  "study_material_id": 1,
+  "study_material_name": "Week 1 Notes",
+  "question": "What is the time complexity of this algorithm?",
+  "source_chunks": [...],
+  "retrieved_sources": 1,
+  "retrieved_chunk_count": 3
+}
+```
+
+---
+
+## Retry Failed Study Material
+
+```
+POST /api/study-materials/<id>/retry/
+```
+
+Retry processing a failed study material. Dispatches a Celery task to re-process only the failed files.
+
+**Precondition**: Study material status must be `failed`.
+
+**Response** `200 OK`:
+
+```json
+{
+  "id": 1,
+  "name": "Week 1 Notes",
+  "status": "queued_for_retry",
+  "processed_files": 8,
+  "files_count": 12
 }
 ```
 
@@ -139,6 +289,8 @@ Merge study material's standalone vectorstore into a course. Creates a new merge
 | No SM attached to course | `build()` — create merged vectorstore, set `merged_vectorstore_path` on course |
 | Same SM `id` already merged | Return `{"message": "Already merged"}` |
 | Different SM already merged | `replace()` — delete old merged folder, build new one, append old to history |
+
+**Precondition**: Study material status must be `completed`.
 
 **Response** `200 OK`:
 
@@ -166,7 +318,7 @@ If no replacement occurred, `"replaced"` is `null`.
 POST /api/query/course/
 ```
 
-**Modified** — now accepts `include_study_materials` parameter.
+Queries either the merged (course + study material) vectorstore or the original video-only vectorstore.
 
 **Request** (JSON):
 
@@ -210,3 +362,19 @@ media/
             ├── index.faiss
             └── index.pkl
 ```
+
+---
+
+## Summary of All Endpoints
+
+| Method | URL | Description |
+|--------|-----|-------------|
+| `POST`   | `/api/study-materials/upload/` | Upload zip and start processing |
+| `GET`    | `/api/study-materials/` | List all study materials |
+| `GET`    | `/api/study-materials/<id>/status/` | Get status + per-file details |
+| `GET`    | `/api/study-materials/<id>/files/` | List individual files with metadata |
+| `POST`   | `/api/study-materials/<id>/query/` | Query the standalone vectorstore |
+| `POST`   | `/api/study-materials/files/<file_id>/query/` | Query a single file's vectorstore |
+| `POST`   | `/api/study-materials/<id>/retry/` | Retry processing (must be failed) |
+| `POST`   | `/api/study-materials/<id>/merge-to-course/<course_id>/` | Merge into a course |
+| `POST`   | `/api/query/course/` | Course query (optionally including SM) |

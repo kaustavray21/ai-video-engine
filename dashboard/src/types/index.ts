@@ -37,6 +37,15 @@ export interface HistoryEntry {
   statusCode: number | string;
 }
 
+export interface StudyMaterialFile {
+  file_id: number;
+  original_name: string;
+  file_type: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'skipped';
+  chunk_count: number;
+  error: string;
+}
+
 export interface StudyMaterial {
   id: number;
   name: string;
@@ -44,9 +53,12 @@ export interface StudyMaterial {
   file_path: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   files_count: number;
+  processed_files: number;
   vectorstore_location: string;
+  error_log: string;
   created_at: string;
   attached_courses_count: number;
+  files?: StudyMaterialFile[];
 }
 
 export interface Course {

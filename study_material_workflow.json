@@ -1,0 +1,673 @@
+{
+  "_meta": {
+    "title": "Study Material Complete Workflow",
+    "project": "ai_video_engine",
+    "version": "1.0",
+    "updated": "2026-05-20T10:00:00Z",
+    "description": "Complete documentation of the study material workflow — models, services, APIs, tasks, and data flow"
+  },
+  "models": {
+    "StudyMaterial": {
+      "file": "apps/core/models/study_material.py",
+      "table": "core_studymaterial",
+      "fields": {
+        "id": "AutoField (PK)",
+        "name": "CharField(255, unique=True) — unique name identifier",
+        "description": "TextField(blank=True, default='') — optional description",
+        "file_path": "CharField(500, blank=True, default='') — absolute path to uploaded zip file",
+        "status": "CharField(20) — choices: pending | processing | completed | failed",
+        "files_count": "IntegerField(default=0) — total files discovered in zip",
+        "processed_files": "IntegerField(default=0) — count of files successfully embedded",
+        "vectorstore_location": "CharField(500, blank=True, default='') — relative path to merged SM vectorstore under study_materials_vectorstore/complete_vectorstores/",
+        "error_log": "TextField(blank=True, default='') — last pipeline error message",
+        "created_at": "DateTimeField(auto_now_add=True)",
+        "attached_to_courses": "ManyToManyField(Course, blank=True) — courses that have this SM merged in"
+      },
+      "status_flow": "pending -> processing -> completed | failed"
+    },
+    "StudyMaterialFile": {
+      "file": "apps/core/models/study_material_file.py",
+      "table": "core_studymaterialfile",
+      "fields": {
+        "id": "AutoField (PK)",
+        "study_material": "ForeignKey(StudyMaterial, CASCADE, related_name='files')",
+        "original_name": "CharField(500) — filename as extracted",
+        "relative_path": "CharField(1000) — path within the zip archive",
+        "file_type": "CharField(20, blank=True, default='') — file extension e.g. '.pdf'",
+        "file_size": "BigIntegerField(default=0) — file size in bytes",
+        "text_path": "CharField(500, blank=True, default='') — relative path to converted .txt file",
+        "vectorstore_path": "CharField(500, blank=True, default='') — relative path to per-file FAISS index",
+        "chunk_count": "IntegerField(default=0) — number of embedding chunks produced",
+        "status": "CharField(20) — choices: pending | processing | completed | failed | skipped",
+        "error": "TextField(blank=True, default='') — error message if failed",
+        "created_at": "DateTimeField(auto_now_add=True)",
+        "processed_at": "DateTimeField(null=True, blank=True) — when processing completed/failed"
+      },
+      "status_flow": "pending -> processing -> completed | failed | skipped",
+      "indexes": ["(study_material, status) — for efficient pending/failed file queries"]
+    },
+    "Course_SM_fields": {
+      "file": "apps/core/models/course.py",
+      "fields": {
+        "study_material": "JSONField(null=True, blank=True) — currently attached SM: {id, name, description}",
+        "merged_vectorstore_path": "CharField(500, blank=True, default='') — path to course+SM merged vectorstore",
+        "study_materials_history": "JSONField(default=list, blank=True) — audit trail of replaced study materials"
+      }
+    }
+  },
+  "serializers": {
+    "study_material_serializers.py": {
+      "file": "apps/core/api/serializers/study_material_serializers.py",
+      "classes": {
+        "StudyMaterialUploadSerializer": {
+          "fields": {
+            "name": "CharField(255) — required",
+            "description": "CharField(required=False, allow_blank=True, default='')",
+            "zip_file": "FileField(write_only=True) — required"
+          }
+        },
+        "StudyMaterialQuerySerializer": {
+          "fields": {
+            "question": "CharField(2000) — required question text"
+          }
+        },
+        "StudyMaterialFileSerializer": {
+          "type": "ModelSerializer (read-only)",
+          "fields": ["id", "original_name", "relative_path", "file_type", "file_size", "text_path", "vectorstore_path", "chunk_count", "status", "error", "created_at", "processed_at"]
+        },
+        "StudyMaterialSerializer": {
+          "type": "ModelSerializer (read-only)",
+          "fields": ["id", "name", "description", "file_path", "status", "files_count", "processed_files", "vectorstore_location", "error_log", "created_at"],
+          "computed_fields": {
+            "attached_courses_count": "obj.attached_to_courses.count()",
+            "file_summary": "aggregated status counts: {completed, pending, processing, failed, skipped} or null if no files"
+          }
+        }
+      }
+    }
+  },
+  "api_endpoints": {
+    "description": "All endpoints prefixed with /api/. Study material endpoints defined in apps/core/api/urls.py",
+    "base_path": "/api",
+    "endpoints": [
+      {
+        "method": "GET",
+        "url": "/api/study-materials/",
+        "view": "StudyMaterialListAPI",
+        "name": "study_material_list",
+        "description": "List all study materials with status summary",
+        "request": "None (no body needed)",
+        "response": "Array of StudyMaterial objects with attached_courses_count and file_summary",
+        "status_codes": {"200": "List of study materials"}
+      },
+      {
+        "method": "POST",
+        "url": "/api/study-materials/upload/",
+        "view": "StudyMaterialUploadAPI",
+        "name": "study_material_upload",
+        "description": "Upload a .zip file as a new study material. Dispatches Celery processing task.",
+        "request_body": "multipart/form-data: name (str), description (str, optional), zip_file (file)",
+        "response": "{id, name, status: 'pending'}",
+        "status_codes": {
+          "201": "Study material created and processing queued",
+          "400": "Duplicate name or validation error"
+        },
+        "side_effects": [
+          "Zip saved to media/study_materials/{name}/{original_filename}",
+          "StudyMaterial DB record created with status=pending",
+          "Celery task process_study_material.delay(sm.id) dispatched"
+        ]
+      },
+      {
+        "method": "GET",
+        "url": "/api/study-materials/<int:pk>/status/",
+        "view": "StudyMaterialStatusAPI",
+        "name": "study_material_status",
+        "description": "Get study material status with per-file breakdown",
+        "request": "URL parameter: pk (study material ID)",
+        "response": "StudyMaterial object + per-file status array: [{file_id, original_name, file_type, status, chunk_count, error}]",
+        "status_codes": {
+          "200": "Status data with per-file details",
+          "404": "Study material not found"
+        }
+      },
+      {
+        "method": "GET",
+        "url": "/api/study-materials/<int:pk>/files/",
+        "view": "StudyMaterialFilesAPI",
+        "name": "study_material_files",
+        "description": "List all files inside a study material",
+        "request": "URL parameter: pk (study material ID)",
+        "response": "{study_material_id, study_material_name, total_files, files: [StudyMaterialFile...]}",
+        "status_codes": {
+          "200": "File list",
+          "404": "Study material not found"
+        }
+      },
+      {
+        "method": "POST",
+        "url": "/api/study-materials/<int:pk>/query/",
+        "view": "StudyMaterialQueryAPI",
+        "name": "study_material_query",
+        "description": "Ask a question against the merged study material vectorstore. Supports overview detection and file manifest injection for summary queries.",
+        "request_body": {
+          "question": "string (required, max 2000 chars)",
+          "filter_source_file": "string (optional) — narrow to specific filename",
+          "filter_file_type": "string (optional) — narrow to specific file type"
+        },
+        "response": "{status, answer, study_material_id, study_material_name, question, source_chunks, retrieved_sources: [{source_file, file_type, chunk_index, chunk_role, score, ...}], retrieved_chunk_count}",
+        "status_codes": {
+          "200": "Answer generated",
+          "400": "Study material not yet completed or other validation error",
+          "404": "Study material not found"
+        },
+        "notes": [
+          "Uses VectorStoreManager.query() with video_title='Study Material' triggering QA_PROMPT_SM (no video references)",
+          "Overview questions (e.g. 'list all topics') auto-boost k and inject file manifest"
+        ]
+      },
+      {
+        "method": "POST",
+        "url": "/api/study-materials/<int:pk>/retry/",
+        "view": "StudyMaterialRetryAPI",
+        "name": "study_material_retry",
+        "description": "Re-queue a failed study material for reprocessing. Phase 2 skips already-completed files.",
+        "request": "URL parameter: pk (study material ID)",
+        "response": "{id, name, status: 'queued_for_retry', processed_files, files_count}",
+        "status_codes": {
+          "200": "Retry queued",
+          "400": "Study material status is not 'failed'",
+          "404": "Study material not found"
+        },
+        "side_effects": [
+          "SM status set to 'processing', error_log cleared",
+          "Celery task retry_study_material.delay(sm.id) dispatched"
+        ]
+      },
+      {
+        "method": "DELETE",
+        "url": "/api/study-materials/<int:pk>/delete/",
+        "view": "StudyMaterialDeleteAPI",
+        "name": "study_material_delete",
+        "description": "Permanently delete a study material from DB and disk. Blocked if attached to any course.",
+        "request": "URL parameter: pk (study material ID)",
+        "response": "{status: 'success', message, deleted_resources: ['zip_file', 'extracted_files', 'merged_vectorstore'], cleanup_errors: [...]}",
+        "status_codes": {
+          "200": "Study material fully deleted",
+          "400": "Cannot delete — attached to courses (includes course names)",
+          "404": "Study material not found"
+        },
+        "side_effects": [
+          "Zip file deleted from media/study_materials/{slug}/",
+          "Extracted raw directory deleted: media/study_materials/{slug}/",
+          "All per-file vectorstores deleted from individual_vectorstores/",
+          "Merged vectorstore deleted from complete_vectorstores/",
+          "StudyMaterial DB record deleted (CASCADE deletes StudyMaterialFile records)"
+        ]
+      },
+      {
+        "method": "POST",
+        "url": "/api/study-materials/<int:pk>/merge-to-course/<int:course_id>/",
+        "view": "StudyMaterialMergeAPI",
+        "name": "study_material_merge",
+        "description": "Merge study material vectorstore into a course's vectorstore. Builds or replaces the merged course+SM vectorstore.",
+        "request": "URL parameters: pk (SM ID), course_id (Course ID)",
+        "response": "{study_material: {id, name}, replaced: old_sm_data|null, merged_vectorstore_path}",
+        "status_codes": {
+          "200": "Merge successful (or already merged)",
+          "400": "Study material not completed or course not active",
+          "404": "Study material or course not found"
+        },
+        "side_effects": [
+          "If course already has the same SM: returns 200, no changes",
+          "If course has a different SM: replace() — deletes old merged VS, builds new one, history appended",
+          "If no SM attached: build() — merges course VS + SM VS",
+          "Course.study_material updated to {id, name, description}",
+          "Course.merged_vectorstore_path updated",
+          "Course.study_materials_history appended (on replace)",
+          "SM.attached_to_courses updated"
+        ]
+      },
+      {
+        "method": "POST",
+        "url": "/api/study-materials/files/<int:file_id>/query/",
+        "view": "StudyMaterialFileQueryAPI",
+        "name": "study_material_file_query",
+        "description": "Ask a question against a single file's vectorstore within a study material",
+        "request_body": {"question": "string (required, max 2000 chars)"},
+        "response": "{status, answer, file_id, file_name, file_type, study_material_id, study_material_name, question, source_chunks, retrieved_sources, retrieved_chunk_count}",
+        "status_codes": {
+          "200": "Answer generated",
+          "400": "File not yet completed or has no vectorstore",
+          "404": "File not found"
+        }
+      }
+    ]
+  },
+  "celery_tasks": {
+    "task_files": {
+      "entry": "apps/core/tasks/__init__.py",
+      "tasks_py": "apps/core/tasks/study_material_tasks.py"
+    },
+    "process_study_material": {
+      "decorator": "@shared_task(bind=True, soft_time_limit=14400, time_limit=15000, max_retries=0)",
+      "soft_time_limit_seconds": 14400,
+      "time_limit_seconds": 15000,
+      "description": "Orchestrates the full 4-phase study material processing pipeline",
+      "flow": [
+        "1. Fetch StudyMaterial by ID",
+        "2. Create StudyMaterialProcessor -> processor.run(sm)",
+        "3. Phase 1-4 execute inside processor.run()",
+        "4. On success: log completion, return result dict",
+        "5. On SoftTimeLimitExceeded: set SM status=failed with message to retry",
+        "6. On other error: set SM status=failed, log, re-raise"
+      ],
+      "return": "{status, study_material_id, files_count, processed_files, vectorstore_location, error}"
+    },
+    "retry_study_material": {
+      "decorator": "@shared_task",
+      "description": "Reset failed SM to processing and re-dispatch process_study_material",
+      "flow": [
+        "1. Set SM status=processing, clear error_log",
+        "2. dispatch process_study_material.delay(sm.id)",
+        "3. Return {status: 'queued', study_material_id}"
+      ],
+      "notes": ["Phase 2 skips already-completed files — only pending/failed files are reprocessed"]
+    }
+  },
+  "services": {
+    "StudyMaterialProcessor": {
+      "file": "apps/core/services/study_material_processor.py",
+      "class": "StudyMaterialProcessor",
+      "dependency_order": ["ZipExtractor", "FileConverter", "ModalityRouter", "Embedder"],
+      "constants": {
+        "MAX_CHUNKS_PER_SEGMENT": 50000
+      },
+      "phases": {
+        "phase_1_discovery": {
+          "condition": "Only runs if SM status is 'pending'",
+          "steps": [
+            "Read zip path from sm.file_path",
+            "Create extraction dir: media/study_materials/{slug}/",
+            "ZipExtractor.extract() -> List[FileEntry] (recursive, path-traversal protected)",
+            "Bulk create StudyMaterialFile records (status=pending)",
+            "Set sm.files_count, sm.processed_files=0, sm.status='processing'"
+          ]
+        },
+        "phase_2_process_files": {
+          "condition": "Processes files with status 'pending' or 'failed' only",
+          "per_file_steps": [
+            "Set smf.status='processing'",
+            "Create FileEntry with absolute path",
+            "FileConverter.convert(entry) -> ConversionResult (30+ formats supported)",
+            "If skipped: mark file 'skipped', continue to next",
+            "Save text to: media/study_materials/{slug}/text/{stem}.txt",
+            "ModalityRouter.route(entry, text, sm.id) -> List[EnrichedChunk]",
+            "If no chunks: mark file 'skipped', continue",
+            "Embedder.embed_chunks(chunks, vs_path) -> EmbedResult (FAISS + BM25)",
+            "Per-file VS saved to: study_materials_vectorstore/individual_vectorstores/{sm_id}_{stem}_vectorstore/",
+            "Update StudyMaterialFile: text_path, vectorstore_path, chunk_count, status='completed'",
+            "Atomically increment sm.processed_files via F('processed_files') + 1"
+          ],
+          "error_handling": "Single file failure does not abort pipeline — sets file to 'failed', logs warning, continues to next file"
+        },
+        "phase_3_merge": {
+          "steps": [
+            "Query all completed files with non-empty vectorstore_path",
+            "For each: load FAISS index, merge via merge_from() into one",
+            "Save merged index to: study_materials_vectorstore/complete_vectorstores/{sm_id}_{slug}_vectorstore/",
+            "Atomic save: write to .tmp dir, then rename",
+            "Return relative path of merged vectorstore"
+          ],
+          "after": "Sets sm.status='completed', sm.vectorstore_location, clears error_log"
+        },
+        "phase_4_cleanup": {
+          "steps": [
+            "Delete original zip file",
+            "Delete extracted raw files (keeps text/ subdirectory)",
+            "Remove empty subdirectories"
+          ]
+        }
+      },
+      "data_flow": "extract (zip) -> convert (30 formats -> text) -> route (5 modality handlers -> EnrichedChunks) -> embed (async batched OpenAI -> FAISS+BM25) -> merge (per-file VSs -> single SM VS) -> cleanup"
+    },
+    "ModalityRouter": {
+      "file": "apps/core/services/modality_router.py",
+      "classes": ["ModalityRouter", "EnrichedChunk", "DocumentHandler", "ImageHandler", "StructuredHandler", "CodeHandler"],
+      "overview": "Routes each file to a modality-specific chunking handler based on file extension. Each handler returns List[EnrichedChunk] with rich metadata.",
+      "handlers": {
+        "DocumentHandler": {
+          "extensions": [".pdf", ".docx", ".doc", ".pptx", ".ppt", ".rtf", ".odt", ".odp"],
+          "splitter": "RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=180)",
+          "behavior": {
+            ".pdf": "pdfplumber per-page extraction. Each page is a parent chunk; large pages split into children with parent_chunk_id.",
+            ".docx": "python-docx heading-aware section chunking. Each heading section produces parent/child hierarchy.",
+            ".pptx": "python-pptx — each slide is a single chunk.",
+            "other": "Simple paragraph split fallback."
+          }
+        },
+        "ImageHandler": {
+          "extensions": [".jpg", ".jpeg", ".png", ".svg"],
+          "behavior": {
+            "raster": "GPT-4o vision API for detailed description (VLM_PROMPT). Falls back to pytesseract OCR text if vision fails or disabled via IMAGE_VLM_ENABLED setting.",
+            "svg": "lxml text/title/desc extraction. Fallback: GPT-4o vision or filename-based summary."
+          }
+        },
+        "StructuredHandler": {
+          "extensions": [".xlsx", ".xls", ".csv", ".json", ".ods"],
+          "ROWS_PER_CHUNK": 20,
+          "behavior": {
+            "xlsx/xls": "openpyxl/xlrd row-group chunking. Each chunk = 20 rows as Col=val pairs. Metadata: sheet_name, row_range.",
+            "csv": "Same row-group chunking as XLSX.",
+            "json": "Each top-level array element or dict key-value pair is a single chunk.",
+            "ods": "Default text chunking fallback."
+          }
+        },
+        "CodeHandler": {
+          "extensions": [".py", ".js", ".ts", ".jsx", ".tsx", ".vue", ".svelte", ".html", ".css", ".scss", ".sass", ".java", ".go", ".rs", ".cpp", ".c", ".h", ".cs", ".swift", ".kt", ".php", ".rb", ".dart", ".json", ".yaml", ".yml", ".toml", ".xml", ".env", ".sh", ".bash", ".zsh", ".dockerfile", ".makefile", ".mk", ".graphql", ".gql", ".sql"],
+          "splitter": "RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=80) for generic code",
+          "behavior": {
+            ".py": "AST parsing: globals chunk (imports, constants) + per-function/class chunks with start_line/end_line/function_name/class_name. parent_chunk_id links to globals.",
+            ".env": "One chunk per non-comment line.",
+            ".sql": "Split on semicolon statement boundaries.",
+            "other_config": "yaml, toml, html, xml, shell etc.: fallback splitter.",
+            "generic_code": "All other code languages: fallback splitter."
+          }
+        }
+      },
+      "default_handler": {
+        "description": "Any extension not matched by the 4 handlers above",
+        "splitter": "RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=180)",
+        "file_type_metadata": "'other'"
+      }
+    },
+    "Embedder": {
+      "file": "apps/core/services/embedder.py",
+      "constants": {
+        "OPENAI_EMBED_URL": "https://api.openai.com/v1/embeddings",
+        "EMBED_MODEL": "text-embedding-3-small",
+        "MAX_BATCH_INPUTS": 2048,
+        "MAX_TOKENS_PER_BATCH": 280000,
+        "BATCH_DELAY": 0.5,
+        "MAX_RETRIES": 5,
+        "RETRY_BASE_DELAY": 15,
+        "TPM_LIMIT": 980000,
+        "RPM_LIMIT": 2800
+      },
+      "methods": {
+        "create_vectorstore": {
+          "description": "Legacy method — splits raw text via RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200), embeds, saves FAISS",
+          "used_by": "Video processing pipeline (not study materials)"
+        },
+        "embed_chunks": {
+          "description": "Primary method for study materials — embeds pre-split EnrichedChunks with per-chunk metadata",
+          "used_by": "StudyMaterialProcessor Phase 2",
+          "flow": [
+            "Extract texts and metadatas from EnrichedChunk list",
+            "Embed via async _embed_all() (batched, rate-limited API calls)",
+            "Build FAISS index with per-chunk metadata via from_embeddings()",
+            "Build BM25 sparse index (rank_bm25.BM25Okapi) alongside FAISS -> bm25_index.pkl",
+            "Save to disk"
+          ]
+        }
+      },
+      "rate_limiter": {
+        "class": "OpenAIRateLimiter",
+        "type": "Dual rolling-window (60s) — TPM and RPM limits",
+        "behavior": "acquire(tokens) blocks until budget available. Lock released before sleep to avoid convoy."
+      },
+      "embed_batch": {
+        "200": "Extract embedding vectors",
+        "429": "Exponential backoff retry (base 15s, doubles, max 5 retries)",
+        "400_max_size": "Recursively split batch in half when OpenAI returns max_tokens_per_request error",
+        "network_error": "Retry up to MAX_RETRIES"
+      }
+    },
+    "VectorStoreManager": {
+      "file": "apps/core/services/vectorstore.py",
+      "class": "VectorStoreManager",
+      "model": "gpt-4o-mini (temperature=0.3, max_tokens=1000)",
+      "prompts": {
+        "QA_PROMPT_MIXED": "For course queries (video + SM). Instructs to separate answer into 'From video:' and 'From study materials:' sections.",
+        "QA_PROMPT_SM": "For SM-only queries. No video references. Uses [Source: filename] annotations.",
+        "QA_PROMPT": "Backward-compat alias for QA_PROMPT_MIXED"
+      },
+      "settings": {
+        "VECTORSTORE_TOP_K": "Default 6 (configurable via env)",
+        "VECTORSTORE_SCORE_THRESHOLD": "Optional minimum score threshold (disabled by default)",
+        "QUERY_REWRITE_ENABLED": "Disabled by default — Phase 3.3 feature",
+        "SELF_QUERY_ROUTING_ENABLED": "Disabled by default — Phase 3.4 feature"
+      },
+      "constants": {
+        "RRF_K": 60,
+        "OVERVIEW_PATTERNS": ["what are the topics", "what topics", "list the topics", "list all", "what files", "what is in this", "overview", "summarize all", "what does this contain", "what is covered", "what are the contents", "table of contents", "describe the study material", "what subjects", "what are the files", "list the files", "what courses", "what subjects", "what do you have", "show me the files", "what material"],
+        "OVERVIEW_MAX_GUARANTEED_FILES": 15
+      },
+      "query_pipeline": [
+        "1. Determine k (default 6, from VECTORSTORE_TOP_K)",
+        "2. Detect SM mode (video_title == 'Study Material' -> QA_PROMPT_SM)",
+        "3. Detect overview question (checked against OVERVIEW_PATTERNS)",
+        "4. Load FAISS index via self.load(); check index.faiss exists",
+        "5. Overview k boosting: k = max(k, min(unique_files * 2, 20))",
+        "6. (OPT) Query rewriting via LLM if QUERY_REWRITE_ENABLED",
+        "7. (OPT) Self-query metadata routing via LLM if SELF_QUERY_ROUTING_ENABLED",
+        "8. Dense retrieval: similarity_search_with_score(question, k=over_k*2)",
+        "9. Apply source_file / file_type metadata filters if provided",
+        "10. BM25 sparse retrieval: load bm25_index.pkl, get_scores(), top over_k",
+        "11. RRF merge dense + sparse (Reciprocal Rank Fusion)",
+        "12. Overview: guarantee 1 chunk per file (small files first, max 15)",
+        "13. Parent-child expansion (replace child with parent text)",
+        "14. Build annotated context with [Source: file, Type: type] per chunk",
+        "15. For overview: inject file manifest from file_manifest parameter",
+        "16. Generate answer with selected prompt (SM or mixed)",
+        "17. Log token usage, latency, top score"
+      ]
+    },
+    "FileConverter": {
+      "file": "apps/core/services/file_converter.py",
+      "extensions_handled": [".pdf", ".docx", ".doc", ".pptx", ".ppt", ".txt", ".md", ".rtf", ".xlsx", ".xls", ".csv", ".ods", ".odp", ".jpg", ".jpeg", ".png", ".svg"],
+      "extensions_code": [".py", ".js", ".ts", ".jsx", ".tsx", ".vue", ".svelte", ".html", ".css", ".scss", ".sass", ".java", ".go", ".rs", ".cpp", ".c", ".h", ".cs", ".swift", ".kt", ".php", ".rb", ".dart", ".json", ".yaml", ".yml", ".toml", ".xml", ".env", ".sh", ".bash", ".zsh", ".dockerfile", ".makefile", ".mk", ".graphql", ".gql", ".sql"],
+      "skip_extensions": [".mp4", ".mp3", ".mov", ".avi", ".zip"],
+      "image_extensions": [".jpg", ".jpeg", ".png"],
+      "conversion_strategies": {
+        ".pdf": "pdfplumber per-page text extraction",
+        ".docx/.doc": "python-docx paragraph concatenation",
+        ".pptx/.ppt": "python-pptx slide shape text extraction",
+        ".txt/.md": "Direct UTF-8 read",
+        ".rtf": "striprtf conversion",
+        ".xlsx/.xls": "openpyxl/xlrd tab-separated rows",
+        ".csv": "csv module tab-separated rows",
+        ".ods": "odfpy tab-separated table cells",
+        ".odp": "odfpy presentation text",
+        "code_files": "Rich [File Summary] header with language name, filename, and extracted symbols (functions, classes, exports, tables, etc.)",
+        ".jpg/.jpeg/.png": "PIL + pytesseract OCR with post-OCR cleanup",
+        ".svg": "lxml text/title node extraction with filename fallback"
+      },
+      "code_symbol_extraction": {
+        ".py": "ast.parse — functions and classes",
+        ".js/.ts/.jsx/.tsx/.vue/.svelte": "regex — functions, classes, exports",
+        ".java/.cs/.swift/.kt/.php/.rb/.dart": "regex — classes, interfaces, methods",
+        ".go": "regex — funcs, structs",
+        ".rs": "regex — fn, structs, enums",
+        ".c/.cpp/.h": "regex — structs, functions",
+        ".sql": "regex — CREATE TABLE, PROCEDURE, FUNCTION, VIEW",
+        ".sh/.bash/.zsh": "regex — function definitions",
+        ".html": "regex — title, h1-h3 headings",
+        ".css/.scss/.sass": "regex — CSS selectors",
+        ".json": "json.loads — top-level keys",
+        ".yaml/.yml": "regex — top-level keys",
+        ".xml": "regex — XML elements",
+        ".graphql/.gql": "regex — types, operations",
+        ".dockerfile": "regex — FROM, RUN, COPY, etc."
+      }
+    },
+    "StudyMaterialMerger": {
+      "file": "apps/core/services/study_material_merger.py",
+      "class": "StudyMaterialMerger",
+      "methods": {
+        "build(course, study_material)": {
+          "description": "Load course VS + SM VS, merge SM into course, save atomically to course_vectorstores/ path",
+          "note": "Original course vectorstore is NEVER modified"
+        },
+        "replace(course, study_material)": {
+          "description": "Delete old merged VS at course.merged_vectorstore_path, then call build()"
+        }
+      },
+      "path_patterns": {
+        "merged_vs": "course_vectorstores/{course_id}_{course_slug}/{course_id}_{course_slug}_{sm_id}_{sm_slug}.vectorstore",
+        "course_vs_abs": "Resolves course.vectorstore_path relative to MEDIA_ROOT"
+      }
+    },
+    "ZipExtractor": {
+      "file": "apps/core/services/zip_extractor.py",
+      "class": "ZipExtractor",
+      "description": "Recursive zip extraction with path traversal protection",
+      "behavior": [
+        "Extracts nested .zips recursively into matching subdirectories",
+        "Sanitizes paths against ../ traversal attacks",
+        "Returns flat list of FileEntry objects"
+      ]
+    }
+  },
+  "settings": {
+    "file": "config/settings.py",
+    "rag_settings": {
+      "VECTORSTORE_TOP_K": "Default 6 (env: VECTORSTORE_TOP_K)",
+      "VECTORSTORE_SCORE_THRESHOLD": "None (disabled by default)",
+      "QUERY_REWRITE_ENABLED": "False (env: QUERY_REWRITE_ENABLED)",
+      "SELF_QUERY_ROUTING_ENABLED": "False (env: SELF_QUERY_ROUTING_ENABLED)",
+      "IMAGE_VLM_ENABLED": "True (env: IMAGE_VLM_ENABLED)"
+    },
+    "celery_settings": {
+      "CELERY_WORKER_CONCURRENCY": 4,
+      "CELERY_WORKER_PREFETCH_MULTIPLIER": 1,
+      "CELERY_WORKER_MAX_TASKS_PER_CHILD": 10,
+      "CELERY_TASK_SOFT_TIME_LIMIT": 1800,
+      "CELERY_TASK_TIME_LIMIT": 2400,
+      "process_study_material_soft_time_limit": 14400,
+      "process_study_material_time_limit": 15000
+    }
+  },
+  "disk_layout": {
+    "base": "MEDIA_ROOT (default: <project_root>/media/)",
+    "structure": {
+      "study_materials/{slug}/": "Extracted zip contents + text/ subdirectory with .txt conversions",
+      "study_materials_vectorstore/individual_vectorstores/{sm_id}_{stem}_vectorstore/": "Per-file FAISS indexes (one per file in the zip)",
+      "study_materials_vectorstore/complete_vectorstores/{sm_id}_{slug}_vectorstore/": "Merged SM-level FAISS index (all files merged together)",
+      "course_vectorstores/{course_id}_{course_slug}/{course_id}_{course_slug}_{sm_id}_{sm_slug}.vectorstore/": "Course+SM merged FAISS index (course VS + SM VS)"
+    }
+  },
+  "management_commands": {
+    "purge_study_materials": {
+      "file": "apps/core/management/commands/purge_study_materials.py",
+      "description": "Completely removes ALL study material data from DB and disk",
+      "flags": {"--dry-run": "Preview only — counts records and files without deleting"},
+      "steps": [
+        "Count DB records (SM, SMF, courses with SM refs)",
+        "Count disk files (study_materials/, study_materials_vectorstore/, course_vectorstores/)",
+        "Clear Course references (study_material, merged_vectorstore_path, study_materials_history)",
+        "Clear M2M through table (attached_to_courses)",
+        "Delete all StudyMaterialFile records",
+        "Delete all StudyMaterial records",
+        "Remove disk directories: study_materials/, study_materials_vectorstore/, course_vectorstores/"
+      ]
+    }
+  },
+  "utility_scripts": {
+    "reset_stuck_sm.py": {
+      "description": "Resets a stuck 'processing' study material to 'failed' so it can be retried from the retry endpoint",
+      "usage": "python reset_stuck_sm.py -i <sm_id>",
+      "effects": ["SM status -> failed", "Any stuck processing StudyMaterialFiles -> failed"]
+    }
+  },
+  "dashboard_frontend": {
+    "api_service": "dashboard/src/services/api.ts",
+    "types": "dashboard/src/types/index.ts",
+    "endpoints": "dashboard/src/constants/endpoints.ts",
+    "api_functions": {
+      "uploadStudyMaterial(name, zipFile, description?)": "POST /api/study-materials/upload/ (FormData) -> {id, name, status}",
+      "fetchStudyMaterials()": "GET /api/study-materials/ -> StudyMaterial[]",
+      "fetchStudyMaterialStatus(id)": "GET /api/study-materials/{id}/status/ -> StudyMaterial",
+      "queryStudyMaterial(id, question)": "POST /api/study-materials/{id}/query/ -> {answer, retrieved_sources, ...}",
+      "queryStudyMaterialFile(fileId, question)": "POST /api/study-materials/files/{fileId}/query/ -> {answer, ...}",
+      "retryStudyMaterial(id)": "POST /api/study-materials/{id}/retry/ -> {status, study_material_id}",
+      "mergeToCourse(smId, courseId)": "POST /api/study-materials/{smId}/merge-to-course/{courseId}/ -> {merged_vectorstore_path, study_material}",
+      "deleteStudyMaterial(smId)": "DELETE /api/study-materials/{smId}/delete/ -> {status, message}"
+    },
+    "react_component": "dashboard/src/components/StudyMaterialsView.tsx (493 lines)"
+  },
+  "complete_flow": {
+    "upload_pipeline": [
+      "User uploads .zip via StudyMaterialUploadAPI (POST /api/study-materials/upload/)",
+      "Zip saved to media/study_materials/{name}/",
+      "StudyMaterial record created (status=pending)",
+      "Celery task process_study_material dispatched",
+      "",
+      "PHASE 1 — Discovery:",
+      "  ZipExtractor extracts all files recursively",
+      "  StudyMaterialFile records created (one per file)",
+      "  SM status set to 'processing'",
+      "",
+      "PHASE 2 — Per-file Processing:",
+      "  For each pending/failed file:",
+      "    1. FileConverter.convert(entry) -> text (30+ formats)",
+      "    2. Text saved to {slug}/text/{stem}.txt",
+      "    3. ModalityRouter.route() -> List[EnrichedChunk]",
+      "       - Routed to DocumentHandler | ImageHandler | StructuredHandler | CodeHandler",
+      "       - Returns chunks with rich metadata (page_number, function_name, etc.)",
+      "    4. Embedder.embed_chunks() -> FAISS index + BM25 index",
+      "       - Async batched OpenAI embeddings via aiohttp",
+      "       - Rate-limited by TokenBucket (TPM + RPM rolling windows)",
+      "       - Saved to individual_vectorstores/{sm_id}_{stem}_vectorstore/",
+      "    5. StudyMaterialFile updated: text_path, vectorstore_path, chunk_count, status='completed'",
+      "    6. SM processed_files incremented atomically",
+      "  Single file failure does not abort — sets file to 'failed', continues",
+      "",
+      "PHASE 3 — Merge:",
+      "  All completed per-file FAISS indexes loaded and merged via merge_from()",
+      "  Merged index saved to complete_vectorstores/{sm_id}_{slug}_vectorstore/",
+      "  SM status set to 'completed', vectorstore_location set",
+      "",
+      "PHASE 4 — Cleanup:",
+      "  Original zip deleted",
+      "  Extracted raw files deleted (text/ subdirectory kept)"
+    ],
+    "merge_into_course": [
+      "User calls StudyMaterialMergeAPI (POST /api/study-materials/{pk}/merge-to-course/{course_id}/)",
+      "Requires SM status='completed'",
+      "StudyMaterialMerger loads course VS + SM VS -> merge_from()",
+      "Merged VS saved to course_vectorstores/{course_id}_{slug}/{course_id}_{slug}_{sm_id}_{sm_slug}.vectorstore/",
+      "Course.study_material, merged_vectorstore_path, study_materials_history updated",
+      "SM.attached_to_courses updated"
+    ],
+    "query": [
+      "User calls StudyMaterialQueryAPI (POST /api/study-materials/{pk}/query/)",
+      "Requires SM status='completed'",
+      "VectorStoreManager.query() executes:",
+      "  1. Load FAISS index from complete_vectorstores/",
+      "  2. (Optional) Detect overview question -> boost k, inject file manifest",
+      "  3. Dense retrieval (FAISS similarity_search_with_score)",
+      "  4. Sparse retrieval (BM25 from bm25_index.pkl) if available",
+      "  5. RRF merge (Reciprocal Rank Fusion, k=60)",
+      "  6. Guarantee 1 chunk per file for overview queries (small files first)",
+      "  7. Parent-child expansion",
+      "  8. Build annotated context with [Source: ...] markers",
+      "  9. Generate answer via GPT-4o-mini using QA_PROMPT_SM (no video references)",
+      "  Returns answer + retrieved_sources with per-chunk metadata",
+      "",
+      "Single file query: StudyMaterialFileQueryAPI (POST /api/study-materials/files/{file_id}/query/)",
+      "  Loads per-file FAISS index from individual_vectorstores/"
+    ],
+    "retry": [
+      "User calls StudyMaterialRetryAPI (POST /api/study-materials/{pk}/retry/)",
+      "Requires SM status='failed'",
+      "SM reset to 'processing', retry_study_material Celery task dispatched",
+      "Phase 2 skips already-completed files (only pending/failed files reprocessed)"
+    ],
+    "delete": [
+      "User calls StudyMaterialDeleteAPI (DELETE /api/study-materials/{pk}/delete/)",
+      "Blocked if SM is attached to any course (returns 400 with course names)",
+      "Full cleanup: zip, extracted dir, per-file VSs, merged VS, DB records (CASCADE deletes files)"
+    ]
+  }
+}
